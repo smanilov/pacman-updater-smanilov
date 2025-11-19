@@ -28,7 +28,6 @@ class PacmanUpdater extends Applet.IconApplet {
         this._checkingForUpdates = false;
 
         this.set_applet_icon_name("face-smile");
-        this.set_applet_tooltip("Click me!");
 
         this.buildMenu(orientation);
 
@@ -138,7 +137,7 @@ class PacmanUpdater extends Applet.IconApplet {
         log(`updates available: ${count}`);
         this._updateCount = count;
         if (count > 0) {
-            Main.notify("Pacman Updater", `${count} updates available`);
+            Main.notify("Pacman Updater", `updates available: ${count}`);
         }
         this.updateTooltip();
     }
@@ -149,7 +148,7 @@ class PacmanUpdater extends Applet.IconApplet {
             "checking for updates..." :
                 this._updateCount == 0 ?
                 "no updates available" :
-                `${this._updateCount} updates available`;
+                `updates available: ${this._updateCount}`;
         this.set_applet_tooltip(`loop is ${loopState}\n${countMessage}`);
     }
 
