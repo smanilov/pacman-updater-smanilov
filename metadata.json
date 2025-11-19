@@ -1,0 +1,8 @@
+{
+  "uuid": "pacman-updater@smanilov",
+  "name": "Pacman Updater",
+  "description": "Checks for pacman updates on boot.",
+  "icon": "utilities-terminal",
+  "version": 0.1,
+  "max-instances": 1
+}
