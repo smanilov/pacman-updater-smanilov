@@ -102,7 +102,7 @@ class PacmanUpdater extends Applet.IconApplet {
         this.updateTooltip();
 
         let proc = new Gio.Subprocess({
-            argv: ['bash', '-c', 'checkupdates | wc -l'],
+            argv: ['bash', '-c', 'checkupdates'],
             flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
         });
 
@@ -111,12 +111,14 @@ class PacmanUpdater extends Applet.IconApplet {
         proc.communicate_utf8_async(null, null, (proc, res) => {
             try {
                 let [ok, stdout, stderr] = proc.communicate_utf8_finish(res);
+                // ok is ignored, because checkupdates returns "not ok" if there
+                // are no updates; stdout is used to check if there are updates
+                log("check complete");
                 this._checkingForUpdates = false;
-                if (ok && stdout) {
-                    let count = parseInt(stdout.trim());
-                    this.setUpdateCount(count);
-                } else if (stderr) {
+                if (stderr) {
                     logError(`error: ${stderr}`);
+                } else {
+                    this.setUpdateMessage(stdout.trim());
                 }
             } catch (e) {
                 logError(`exception: parseInt failed? ${e}`);
@@ -132,12 +134,16 @@ class PacmanUpdater extends Applet.IconApplet {
         log("terminal opened");
     }
 
-
-    setUpdateCount(count) {
+    setUpdateMessage(cmdOutput) {
+        let count = cmdOutput ? cmdOutput.split('\n').length : 0;
         log(`updates available: ${count}`);
         this._updateCount = count;
         if (count > 0) {
-            Main.notify("Pacman Updater", `updates available: ${count}`);
+            let notification = `updates available: ${count}`;
+            if (count <= 10) {
+                notification += `\n${cmdOutput}`;
+            }
+            Main.notify("Pacman Updater", notification);
         }
         this.updateTooltip();
     }
