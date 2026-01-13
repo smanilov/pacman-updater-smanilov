@@ -20,18 +20,76 @@ class PacmanUpdater extends Applet.IconApplet {
         this.menu = null;
         /** @type {PopupMenu.PopupSwitchMenuItem|null} */
         this.toggleLoopItem = null;
+
         // bool
         this._loopEnabled = true;
         // int
         this._updateCount = 0;
         // bool
         this._checkingForUpdates = false;
+        // bool
+        this._hasNetwork = false;
+
+        /** @type {number|null} */
+        this._networkMonitorId = null;
 
         this.set_applet_icon_name("face-smile");
 
         this.buildMenu(orientation);
 
         this.startLoop();
+    }
+
+    // destructor
+    on_applet_removed_from_panel() {
+        if (this.isLoopRunning()) {
+            this.stopLoop();
+        }
+        if (this.isNetworkMonitorEnabled()) {
+            this.disableNetworkMonitor();
+        }
+        this.menu.destroy();
+        log("pacman updater stopped");
+    }
+
+    _updateTooltip() {
+        let loopState = this._loopEnabled ? "running" : "not running";
+        if (!this._hasNetwork) {
+            this.set_applet_tooltip(`loop is ${loopState}\nno network connection`);
+        } else if (this._checkingForUpdates) {
+            this.set_applet_tooltip(`loop is ${loopState}\nchecking for updates...`);
+        } else {
+            let countMessage = this._updateCount == 0 ?
+                "no updates available" :
+                `updates available: ${this._updateCount}`;
+            this.set_applet_tooltip(`loop is ${loopState}\n${countMessage}`);
+        }
+    }
+
+    setLoopEnabled(loopEnabled) {
+        this._loopEnabled = loopEnabled;
+        this._updateTooltip();
+    }
+
+    setUpdateCount(updateCount) {
+        this._updateCount = updateCount;
+        this._updateTooltip();
+    }
+
+    setCheckingForUpdates(checkingForUpdates) {
+        this._checkingForUpdates = checkingForUpdates;
+        this._updateTooltip();
+    }
+
+    setHasNetwork(hasNetwork) {
+        this._hasNetwork = hasNetwork;
+        this._updateTooltip();
+    }
+
+    // event handler; not called explicitly in this file
+    on_applet_clicked(event) {
+        log("applet clicked");
+        this.menu.toggle();
     }
 
     buildMenu(orientation) {
@@ -45,8 +103,7 @@ class PacmanUpdater extends Applet.IconApplet {
         );
 
         this.toggleLoopItem.connect('toggled', (item, state) => {
-            this._loopEnabled = state;
-            this.updateTooltip();
+            this.setLoopEnabled(state);
             if (state) {
                 log("Update loop enabled");
                 this.startLoop();
@@ -64,13 +121,20 @@ class PacmanUpdater extends Applet.IconApplet {
         log("menu built");
     }
 
-    on_applet_clicked(event) {
-        log("applet clicked");
-        this.menu.toggle();
+    launchUpdateTerminal() {
+        log("opening terminal...");
+
+        Util.spawnCommandLine('gnome-terminal -- bash -c "sudo pacman -Syu && fc-cache -fv"');
+
+        log("terminal opened");
+    }
+
+    isLoopRunning() {
+        return this._timeout;
     }
 
     startLoop() {
-        if (this._timeout) {
+        if (this.isLoopRunning()) {
             log("warning: corrupt state; already running");
             return;
         }
@@ -84,22 +148,32 @@ class PacmanUpdater extends Applet.IconApplet {
     }
 
     stopLoop() {
-        if (!this._timeout) {
+        if (!this.isLoopRunning()) {
             log("warning: corrupt state; not running");
             return;
         }
-        if (this._timeout) {
-            Mainloop.source_remove(this._timeout);
-            this._timeout = null;
-        }
+
+        Mainloop.source_remove(this._timeout);
+        this._timeout = null;
 
         log("loop stopped");
     }
 
     checkUpdates() {
+        if (!this.hasNetwork()) {
+            log("no network connection, skipping update check");
+            this.setHasNetwork(false);
+            if (!this.isNetworkMonitorEnabled()) {
+                this.enableNetworkMonitor();
+            }
+            return;
+        } else {
+            log("network connection detected");
+            this.setHasNetwork(true);
+        }
+
         log("checking for updates...");
-        this._checkingForUpdates = true;
-        this.updateTooltip();
+        this.setCheckingForUpdates(true);
 
         let proc = new Gio.Subprocess({
             argv: ['bash', '-c', 'checkupdates'],
@@ -114,7 +188,7 @@ class PacmanUpdater extends Applet.IconApplet {
                 // ok is ignored, because checkupdates returns "not ok" if there
                 // are no updates; stdout is used to check if there are updates
                 log("check complete");
-                this._checkingForUpdates = false;
+                this.setCheckingForUpdates(false);
                 if (stderr) {
                     logError(`error: ${stderr}`);
                 } else {
@@ -126,18 +200,10 @@ class PacmanUpdater extends Applet.IconApplet {
         });
     }
 
-    launchUpdateTerminal() {
-        log("opening terminal...");
-
-        Util.spawnCommandLine('gnome-terminal -- bash -c "sudo pacman -Syu"');
-
-        log("terminal opened");
-    }
-
     setUpdateMessage(cmdOutput) {
         let count = cmdOutput ? cmdOutput.split('\n').length : 0;
         log(`updates available: ${count}`);
-        this._updateCount = count;
+        this.setUpdateCount(count);
         if (count > 0) {
             let notification = `updates available: ${count}`;
             if (count <= 10) {
@@ -145,25 +211,76 @@ class PacmanUpdater extends Applet.IconApplet {
             }
             Main.notify("Pacman Updater", notification);
         }
-        this.updateTooltip();
     }
 
-    updateTooltip() {
-        let loopState = this._loopEnabled ? "running" : "not running";
-        let countMessage = this._checkingForUpdates ?
-            "checking for updates..." :
-                this._updateCount == 0 ?
-                "no updates available" :
-                `updates available: ${this._updateCount}`;
-        this.set_applet_tooltip(`loop is ${loopState}\n${countMessage}`);
+    hasNetwork() {
+        let monitor = Gio.NetworkMonitor.get_default();
+        return monitor.get_network_available();
     }
 
-    on_applet_removed_from_panel() {
-        if (this._timeout) {
-            this.stopLoop();
+    getNetworkConnectivity() {
+        let monitor = Gio.NetworkMonitor.get_default();
+        let connectivity = monitor.get_connectivity();
+        let label = "";
+        switch (connectivity) {
+            case Gio.NetworkConnectivity.NONE:
+                label = "none";
+                break;
+            case Gio.NetworkConnectivity.LOCAL:
+                label = "local";
+                break;
+            case Gio.NetworkConnectivity.LIMITED:
+                label = "limited";
+                break;
+            case Gio.NetworkConnectivity.FULL:
+                label = "full";
+                break;
+            default:
+                label = "unknown";
+                break;
         }
-        this.menu.destroy();
-        log("pacman updater stopped");
+        log(`network connectivity: ${label}`);
+        return connectivity;
+    }
+
+    // register a monitor to 'network-changed' events and store it in
+    // this._networkMonitorId
+    enableNetworkMonitor() {
+        log("enabling network monitor...");
+        if (this.isNetworkMonitorEnabled()) {
+            log("warning: corrupt state; network monitor already enabled");
+            return;
+        }
+        let monitor = Gio.NetworkMonitor.get_default();
+        this._networkMonitorId = monitor.connect('network-changed', (monitor, available) => {
+            log(`network available: ${available}`);
+            if (available) {
+                let connectivity = this.getNetworkConnectivity();
+                if (connectivity == Gio.NetworkConnectivity.FULL) {
+                    if (this.isLoopRunning()) {
+                        this.stopLoop();
+                    }
+                    this.startLoop();
+                    this.disableNetworkMonitor();
+                }
+            }
+        });
+    }
+
+    disableNetworkMonitor() {
+        log("disabling network monitor...");
+        if (!this.isNetworkMonitorEnabled()) {
+            log("warning: corrupt state; network monitor not enabled");
+            return;
+        }
+
+        let monitor = Gio.NetworkMonitor.get_default();
+        monitor.disconnect(this._networkMonitorId);
+        this._networkMonitorId = null;
+    }
+
+    isNetworkMonitorEnabled() {
+        return this._networkMonitorId;
     }
 }
 
