@@ -258,6 +258,7 @@ class PacmanUpdater extends Applet.IconApplet {
                 let connectivity = this.getNetworkConnectivity();
                 if (connectivity == Gio.NetworkConnectivity.FULL) {
                     if (this.isLoopRunning()) {
+                        log(`restarting loop...`);
                         this.stopLoop();
                     }
                     this.startLoop();
