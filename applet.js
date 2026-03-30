@@ -7,10 +7,15 @@ const St = imports.gi.St;
 const Util = imports.misc.util;
 
 class PacmanUpdater extends Applet.IconApplet {
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                         CONSTRUCTOR/DESTRUCTOR                             //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
     constructor(metadata, orientation, panel_height, instance_id) {
         super(orientation, panel_height, instance_id);
 
-        log("pacman updater started");
+        log("pacman updater started -- version 1.0.0");
 
         /** @type {number|null} ID of the Mainloop timeout */
         this._timeout = null;
@@ -31,7 +36,7 @@ class PacmanUpdater extends Applet.IconApplet {
         this._hasNetwork = false;
 
         /** @type {number|null} */
-        this._networkMonitorId = null;
+        this._networkWatcherId = null;
 
         this.set_applet_icon_name("face-smile");
 
@@ -42,29 +47,27 @@ class PacmanUpdater extends Applet.IconApplet {
 
     // destructor
     on_applet_removed_from_panel() {
+        if (this.isNetworkWatcherEnabled()) {
+            this.disableNetworkWatcher();
+        }
         if (this.isLoopRunning()) {
             this.stopLoop();
-        }
-        if (this.isNetworkMonitorEnabled()) {
-            this.disableNetworkMonitor();
         }
         this.menu.destroy();
         log("pacman updater stopped");
     }
 
-    _updateTooltip() {
-        let loopState = this._loopEnabled ? "running" : "not running";
-        if (!this._hasNetwork) {
-            this.set_applet_tooltip(`loop is ${loopState}\nno network connection`);
-        } else if (this._checkingForUpdates) {
-            this.set_applet_tooltip(`loop is ${loopState}\nchecking for updates...`);
-        } else {
-            let countMessage = this._updateCount == 0 ?
-                "no updates available" :
-                `updates available: ${this._updateCount}`;
-            this.set_applet_tooltip(`loop is ${loopState}\n${countMessage}`);
-        }
+    // event handler; not called explicitly in this file
+    on_applet_clicked(event) {
+        log("applet clicked");
+        this.menu.toggle();
     }
+
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                                SETTERS                                     //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
 
     setLoopEnabled(loopEnabled) {
         this._loopEnabled = loopEnabled;
@@ -86,11 +89,25 @@ class PacmanUpdater extends Applet.IconApplet {
         this._updateTooltip();
     }
 
-    // event handler; not called explicitly in this file
-    on_applet_clicked(event) {
-        log("applet clicked");
-        this.menu.toggle();
+    _updateTooltip() {
+        let loopState = this._loopEnabled ? "running" : "not running";
+        if (!this._hasNetwork) {
+            this.set_applet_tooltip(`loop is ${loopState}\nno network connection`);
+        } else if (this._checkingForUpdates) {
+            this.set_applet_tooltip(`loop is ${loopState}\nchecking for updates...`);
+        } else {
+            let countMessage = this._updateCount == 0 ?
+                "no updates available" :
+                `updates available: ${this._updateCount}`;
+            this.set_applet_tooltip(`loop is ${loopState}\n${countMessage}`);
+        }
     }
+
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                              MENU LOGIC                                    //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
 
     buildMenu(orientation) {
         this.menuManager = new PopupMenu.PopupMenuManager(this);
@@ -129,6 +146,12 @@ class PacmanUpdater extends Applet.IconApplet {
         log("terminal opened");
     }
 
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                            LOOP MANAGEMENT                                 //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
+
     isLoopRunning() {
         return this._timeout;
     }
@@ -159,12 +182,18 @@ class PacmanUpdater extends Applet.IconApplet {
         log("loop stopped");
     }
 
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                             CHECK UPDATES                                  //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
+
     checkUpdates() {
         if (!this.hasNetwork()) {
             log("no network connection, skipping update check");
             this.setHasNetwork(false);
-            if (!this.isNetworkMonitorEnabled()) {
-                this.enableNetworkMonitor();
+            if (!this.isNetworkWatcherEnabled()) {
+                this.enableNetworkWatcher();
             }
             return;
         } else {
@@ -213,6 +242,12 @@ class PacmanUpdater extends Applet.IconApplet {
         }
     }
 
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                            NETWORK WATCHER                                 //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
+
     hasNetwork() {
         let monitor = Gio.NetworkMonitor.get_default();
         return monitor.get_network_available();
@@ -243,16 +278,16 @@ class PacmanUpdater extends Applet.IconApplet {
         return connectivity;
     }
 
-    // register a monitor to 'network-changed' events and store it in
-    // this._networkMonitorId
-    enableNetworkMonitor() {
-        log("enabling network monitor...");
-        if (this.isNetworkMonitorEnabled()) {
-            log("warning: corrupt state; network monitor already enabled");
+    // register a watcher to 'network-changed' events and store it in
+    // this._networkWatcherId
+    enableNetworkWatcher() {
+        log("enabling network watcher...");
+        if (this.isNetworkWatcherEnabled()) {
+            log("warning: corrupt state; network watcher already enabled");
             return;
         }
         let monitor = Gio.NetworkMonitor.get_default();
-        this._networkMonitorId = monitor.connect('network-changed', (monitor, available) => {
+        this._networkWatcherId = monitor.connect('network-changed', (monitor, available) => {
             log(`network available: ${available}`);
             if (available) {
                 let connectivity = this.getNetworkConnectivity();
@@ -262,32 +297,44 @@ class PacmanUpdater extends Applet.IconApplet {
                         this.stopLoop();
                     }
                     this.startLoop();
-                    this.disableNetworkMonitor();
+                    this.disableNetworkWatcher();
                 }
             }
         });
     }
 
-    disableNetworkMonitor() {
-        log("disabling network monitor...");
-        if (!this.isNetworkMonitorEnabled()) {
-            log("warning: corrupt state; network monitor not enabled");
+    disableNetworkWatcher() {
+        log("disabling network watcher...");
+        if (!this.isNetworkWatcherEnabled()) {
+            log("warning: corrupt state; network watcher not enabled");
             return;
         }
 
         let monitor = Gio.NetworkMonitor.get_default();
-        monitor.disconnect(this._networkMonitorId);
-        this._networkMonitorId = null;
+        monitor.disconnect(this._networkWatcherId);
+        this._networkWatcherId = null;
     }
 
-    isNetworkMonitorEnabled() {
-        return this._networkMonitorId;
+    isNetworkWatcherEnabled() {
+        return this._networkWatcherId;
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                                   MAIN                                     //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
 
 function main(metadata, orientation, panel_height, instance_id) {
     return new PacmanUpdater(metadata, orientation, panel_height, instance_id);
 }
+
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                                 LOGGING                                    //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
 
 function log(msg) {
     global.log(`[pacman-updater@smanilov] ${msg}`);
@@ -296,4 +343,3 @@ function log(msg) {
 function logError(msg) {
     global.logError(`[pacman-updater@smanilov] ${msg}`);
 }
-
