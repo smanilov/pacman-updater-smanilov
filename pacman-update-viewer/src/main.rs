@@ -98,6 +98,7 @@ struct AppState {
     update_succeeded: bool,
     info_popup: Option<InfoPopup>,
     search: Option<SearchState>,
+    show_help: bool,
 }
 
 impl AppState {
@@ -243,6 +244,27 @@ impl AppState {
         }
     }
 
+    fn reload_packages(&mut self, packages: HashMap<String, Package>) {
+        self.impacts = packages.keys()
+            .map(|name| (name.clone(), dag_size(name, &packages)))
+            .collect();
+        self.all_roots = packages.iter()
+            .map(|(name, pkg)| AllPkgInfo {
+                name: name.clone(),
+                version: pkg.version.clone(),
+                impact: *self.impacts.get(name).unwrap_or(&1),
+            })
+            .collect();
+        self.all_roots.sort_by(|a, b| b.impact.cmp(&a.impact).then(a.name.cmp(&b.name)));
+        self.roots.retain(|r| packages.contains_key(&r.name));
+        for root in &mut self.roots {
+            root.impact = *self.impacts.get(&root.name).unwrap_or(&1);
+        }
+        self.expanded.retain(|name| packages.contains_key(name));
+        self.packages = packages;
+        self.clamp_cursor();
+    }
+
     fn toggle_mode(&mut self) {
         self.mode = match self.mode {
             Mode::Updates => Mode::AllPackages,
@@ -294,17 +316,84 @@ fn run_checkupdates() -> Vec<(String, String, String)> {
     }
 }
 
-fn load_depgraph() -> Option<Depgraph> {
+fn depgraph_path() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let path = format!(
-        "{home}/.local/share/cinnamon/applets/pacman-updater@smanilov/depgraph.json"
-    );
+    Some(format!("{home}/.local/share/cinnamon/applets/pacman-updater@smanilov/depgraph.json"))
+}
+
+fn load_depgraph() -> Option<Depgraph> {
+    let path = depgraph_path()?;
     let content = std::fs::read_to_string(&path)
         .map_err(|e| eprintln!("Could not read depgraph at {path}: {e}"))
         .ok()?;
     serde_json::from_str(&content)
         .map_err(|e| eprintln!("Could not parse depgraph: {e}"))
         .ok()
+}
+
+/// Run `pacman -Qi`, rebuild depgraph.json on disk, and return the new packages map.
+fn rebuild_depgraph() -> HashMap<String, Package> {
+    let output = match Command::new("pacman").args(["-Qi"]).output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(e) => { eprintln!("Failed to run pacman -Qi: {e}"); return HashMap::new(); }
+    };
+
+    let mut result: HashMap<String, Package> = HashMap::new();
+    let mut json_pkgs = serde_json::Map::new();
+    let mut fields: HashMap<String, String> = HashMap::new();
+
+    for line in output.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let Some(name) = fields.get("Name").cloned() {
+                let version = fields.get("Version").cloned().unwrap_or_default();
+                let reason = if fields.get("Install Reason").map_or(false, |r| r.contains("Explicitly")) {
+                    "explicit"
+                } else {
+                    "dependency"
+                };
+                let parse_list = |key: &str| -> Vec<String> {
+                    fields.get(key)
+                        .filter(|v| *v != "None")
+                        .map(|v| v.split_whitespace().map(str::to_string).collect())
+                        .unwrap_or_default()
+                };
+                let required_by = parse_list("Required By");
+                let depends_on: Vec<String> = parse_list("Depends On")
+                    .into_iter()
+                    .map(|s| {
+                        let end = s.find(|c| c == '>' || c == '<' || c == '=').unwrap_or(s.len());
+                        s[..end].to_string()
+                    })
+                    .collect();
+
+                json_pkgs.insert(name.clone(), serde_json::json!({
+                    "name": name,
+                    "version": version,
+                    "reason": reason,
+                    "depends_on": depends_on,
+                    "required_by": required_by,
+                }));
+                result.insert(name, Package { version, required_by });
+            }
+            fields.clear();
+        } else if !line.starts_with(' ') {
+            if let Some(idx) = line.find(" : ") {
+                fields.insert(line[..idx].trim().to_string(), line[idx + 3..].to_string());
+            }
+        }
+    }
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let json = serde_json::json!({ "last_updated": timestamp, "packages": json_pkgs });
+    if let Some(path) = depgraph_path() {
+        if let Ok(s) = serde_json::to_string_pretty(&json) {
+            let _ = std::fs::write(path, s);
+        }
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +441,7 @@ fn build_state(
         update_succeeded: false,
         info_popup: None,
         search: None,
+        show_help: false,
     }
 }
 
@@ -413,6 +503,7 @@ fn run_app(
         let update_succeeded = state.update_succeeded;
         let mode = state.mode;
         let search_query: Option<String> = state.search.as_ref().map(|s| s.query.clone());
+        let show_help = state.show_help;
 
         let popup_snapshot = state.info_popup.as_ref().map(|p| {
             (p.package.clone(), p.content.clone(), p.scroll)
@@ -512,7 +603,7 @@ fn run_app(
                     Mode::Updates => "a all pkgs",
                     Mode::AllPackages => "a updates",
                 };
-                let base = format!("  ↑↓ navigate   ←→ collapse/expand   i info   / search   r run update   {a_hint}   q quit");
+                let base = format!("  ↑↓ navigate   ←→ collapse/expand   i info   / search   r update   d remove   {a_hint}   h help   q quit");
                 if update_succeeded {
                     (format!("{base} (update succeeded)"), Style::default().fg(Color::Green))
                 } else {
@@ -520,6 +611,44 @@ fn run_app(
                 }
             };
             f.render_widget(Paragraph::new(footer_text).style(footer_style), footer_area);
+
+            // Help popup overlay
+            if show_help {
+                let area = centered_rect(55, 60, f.area());
+                f.render_widget(Clear, area);
+                f.render_widget(
+                    Paragraph::new(concat!(
+                        "  Normal mode\n",
+                        "\n",
+                        "    ↑ / ↓        Navigate\n",
+                        "    → / ←        Expand / collapse\n",
+                        "    i            Package info (pacman -Qi)\n",
+                        "    /            Search packages\n",
+                        "    r            Run update (sudo pacman -Syu)\n",
+                        "    d            Remove package under cursor (sudo pacman -R)\n",
+                        "    a            Toggle updates / all packages\n",
+                        "    h / ?        Show this help\n",
+                        "    q            Quit\n",
+                        "\n",
+                        "  Search mode\n",
+                        "\n",
+                        "    Type         Filter packages by name\n",
+                        "    Backspace    Delete last character\n",
+                        "    ↑ / ↓        Navigate filtered list\n",
+                        "    Enter        Confirm selection\n",
+                        "    Esc          Cancel search\n",
+                        "\n",
+                        "  any key closes this popup",
+                    ))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Help ")
+                            .border_style(Style::default().fg(Color::Yellow)),
+                    ),
+                    area,
+                );
+            }
 
             // Info popup overlay
             if let Some((pkg, content, scroll)) = &popup_snapshot {
@@ -542,7 +671,9 @@ fn run_app(
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                if state.info_popup.is_some() {
+                if state.show_help {
+                    state.show_help = false;
+                } else if state.info_popup.is_some() {
                     match key.code {
                         KeyCode::Up => {
                             if let Some(p) = &mut state.info_popup {
@@ -599,6 +730,7 @@ fn run_app(
                 } else {
                     match key.code {
                         KeyCode::Char('q') => return Ok(state.update_succeeded),
+                        KeyCode::Char('h') | KeyCode::Char('?') => state.show_help = true,
                         KeyCode::Char('a') => state.toggle_mode(),
                         KeyCode::Char('/') => {
                             state.search = Some(SearchState {
@@ -629,6 +761,20 @@ fn run_app(
                             enable_raw_mode()?;
                             execute!(terminal.backend_mut(), EnterAlternateScreen)?;
                             terminal.clear()?;
+                        }
+                        KeyCode::Char('d') => {
+                            let name = vis[cursor].name.clone();
+                            disable_raw_mode()?;
+                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                            terminal.show_cursor()?;
+
+                            Command::new("sudo").args(["pacman", "-R", &name]).status().ok();
+                            let packages = rebuild_depgraph();
+
+                            enable_raw_mode()?;
+                            execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                            terminal.clear()?;
+                            state.reload_packages(packages);
                         }
                         KeyCode::Up => state.move_up(),
                         KeyCode::Down => state.move_down(),
