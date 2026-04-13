@@ -666,22 +666,10 @@ fn run_app(
                 );
             }
 
-            let (footer_text, footer_style) = if search_query.is_some() {
-                (
-                    "  ↑↓ navigate   enter confirm   esc cancel".to_string(),
-                    Style::default().fg(Color::Yellow),
-                )
+            let (footer_text, footer_style) = if update_succeeded {
+                ("  press h for help  (update succeeded)", Style::default().fg(Color::Green))
             } else {
-                let a_hint = match mode {
-                    Mode::Updates => "a all pkgs",
-                    Mode::AllPackages => "a updates",
-                };
-                let base = format!("  ↑↓ navigate   ←→ collapse/expand   i info   / search   r update   d remove   {a_hint}   t transpose   g groups   h help   q quit");
-                if update_succeeded {
-                    (format!("{base} (update succeeded)"), Style::default().fg(Color::Green))
-                } else {
-                    (base, Style::default().fg(Color::DarkGray))
-                }
+                ("  press h for help", Style::default().fg(Color::DarkGray))
             };
             f.render_widget(Paragraph::new(footer_text).style(footer_style), footer_area);
 
