@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development & Testing
 
-There is no build step. The applet runs directly from source as a Cinnamon applet.
+The applet (`applet.js`) runs directly from source as a Cinnamon applet — no build step.
+
+The update viewer (`pacman-update-viewer/`) is a Rust TUI app and must be compiled:
+```bash
+cd pacman-update-viewer && cargo build --release
+```
+The release binary is what `applet.js` invokes.
 
 **To reload the applet after changes:**
 ```
@@ -17,7 +23,9 @@ journalctl -f /usr/bin/cinnamon
 ```
 Log messages are prefixed with `[pacman-updater@smanilov]`.
 
-**Runtime dependency:** `checkupdates` must be installed (from `pacman-contrib`).
+**Runtime dependencies:**
+- `checkupdates` (from `pacman-contrib`) — used by both the applet and the viewer
+- `cargo` / Rust toolchain — to build the viewer
 
 ## Architecture
 
@@ -40,6 +48,19 @@ The entire applet is a single class `PacmanUpdater` in `applet.js` that extends 
 - `_networkWatcherId` — GIO signal handler ID (non-null = watcher active)
 - `_depgraphPath` — absolute path to `depgraph.json` derived from `metadata.path`
 - `_loopEnabled`, `_updateCount`, `_checkingForUpdates`, `_hasNetwork`
+
+## Update Viewer (`pacman-update-viewer/`)
+
+A Rust TUI app (`src/main.rs`) that replaces the old raw `sudo pacman -Syu` terminal action.
+
+**Flow:**
+1. Runs `checkupdates` to get the pending update list
+2. Reads `depgraph.json` to compute an impact factor per package (DAG size via `required_by` edges)
+3. Sorts updates by impact descending and renders them in an interactive list
+4. `r` suspends the TUI, runs `sudo pacman -Syu` in the foreground, then resumes the TUI; sets an internal `update_succeeded` flag on exit code 0
+5. `q` exits with code 0 if `update_succeeded`, else code 1
+
+The applet's `spawnCommandLineAsync` success callback (which triggers `updateDepgraph()`) fires only when the viewer exits with code 0 — i.e., only after a successful update.
 
 ## Data
 

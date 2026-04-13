@@ -201,10 +201,13 @@ class PacmanUpdater extends Applet.IconApplet {
     launchUpdateTerminal() {
         log("opening terminal...");
 
+        let appletPath = this._depgraphPath.replace('/depgraph.json', '');
+        let viewerPath = appletPath + '/pacman-update-viewer/target/release/pacman-update-viewer';
+
         // --wait makes gnome-terminal block until the shell exits, so the
         // spawnCommandLineAsync callback fires only after the update finishes.
         Util.spawnCommandLineAsync(
-            'gnome-terminal --wait -- bash -c "sudo pacman -Syu && fc-cache -fv"',
+            `gnome-terminal --wait -- ${viewerPath}`,
             () => {
                 log("update terminal exited successfully");
                 this.updateDepgraph();

@@ -1,8 +1,9 @@
 # Installation
 
 1. git clone this-repo ~/.local/share/cinnamon/applets/pacman-updater@smanilov
-2. Alt+F2, r to restart Cinnamon
-3. add pacman-updater@smanilov to Applets
+2. Build the update viewer: `cd pacman-update-viewer && cargo build --release`
+3. Alt+F2, r to restart Cinnamon
+4. add pacman-updater@smanilov to Applets
 
 # Usage
 
@@ -11,8 +12,11 @@
 2. if the count is positive, a notification will be shown informing the user
    there are updates available
 3. from the taskbar, the user can click the smiley and run the updater; this
-   will open a new terminal and prompt for sudo password
-4. after the update completes successfully, `depgraph.json` is refreshed
+   opens a terminal running `pacman-update-viewer` — a TUI that lists pending
+   updates sorted by impact factor, with keyboard navigation
+4. inside the viewer: `↑`/`↓` to navigate, `r` to run `sudo pacman -Syu`,
+   `q` to quit; the viewer exits with code 0 only if the update succeeded
+5. after the update completes successfully, `depgraph.json` is refreshed
    automatically; it is also refreshed on applet startup
 
 # Data
