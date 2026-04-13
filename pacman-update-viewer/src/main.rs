@@ -27,6 +27,8 @@ struct Package {
     version: String,
     #[serde(default)]
     required_by: Vec<String>,
+    #[serde(default)]
+    depends_on: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,11 +92,14 @@ struct AppState {
     roots: Vec<UpdateInfo>,
     all_roots: Vec<AllPkgInfo>,
     packages: HashMap<String, Package>,
-    /// Pre-computed impact (dag_size) for every package in the depgraph.
+    /// Pre-computed reverse-impact (dag_size via required_by) for every package.
     impacts: HashMap<String, usize>,
+    /// Pre-computed forward-impact (closure size via depends_on) for every package.
+    dep_impacts: HashMap<String, usize>,
     expanded: HashSet<String>,
     cursor: usize,
     mode: Mode,
+    transposed: bool,
     update_succeeded: bool,
     info_popup: Option<InfoPopup>,
     search: Option<SearchState>,
@@ -112,7 +117,7 @@ impl AppState {
             Mode::Updates => {
                 for root in &self.roots {
                     if !matches(&root.name) { continue; }
-                    let req_by = self.req_by(&root.name);
+                    let children = self.children_of(&root.name);
                     let is_expanded = self.expanded.contains(&root.name);
                     out.push(VisibleItem {
                         name: root.name.clone(),
@@ -120,37 +125,37 @@ impl AppState {
                         kind: ItemKind::Root {
                             old_version: root.old_version.clone(),
                             new_version: root.new_version.clone(),
-                            impact: root.impact,
+                            impact: self.impact_of(&root.name),
                         },
-                        has_children: !req_by.is_empty(),
+                        has_children: !children.is_empty(),
                         is_expanded,
                         is_cycle: false,
                     });
                     if is_expanded {
                         let mut ancestors = HashSet::from([root.name.clone()]);
-                        self.collect_dep_children(req_by, 1, &mut ancestors, &mut out);
+                        self.collect_children(children, 1, &mut ancestors, &mut out);
                     }
                 }
             }
             Mode::AllPackages => {
                 for pkg in &self.all_roots {
                     if !matches(&pkg.name) { continue; }
-                    let req_by = self.req_by(&pkg.name);
+                    let children = self.children_of(&pkg.name);
                     let is_expanded = self.expanded.contains(&pkg.name);
                     out.push(VisibleItem {
                         name: pkg.name.clone(),
                         depth: 0,
                         kind: ItemKind::AllPkgRoot {
                             version: pkg.version.clone(),
-                            impact: pkg.impact,
+                            impact: self.impact_of(&pkg.name),
                         },
-                        has_children: !req_by.is_empty(),
+                        has_children: !children.is_empty(),
                         is_expanded,
                         is_cycle: false,
                     });
                     if is_expanded {
                         let mut ancestors = HashSet::from([pkg.name.clone()]);
-                        self.collect_dep_children(req_by, 1, &mut ancestors, &mut out);
+                        self.collect_children(children, 1, &mut ancestors, &mut out);
                     }
                 }
             }
@@ -159,17 +164,26 @@ impl AppState {
     }
 
     fn req_by(&self, name: &str) -> Vec<String> {
-        self.packages
-            .get(name)
-            .map(|p| {
-                let mut v = p.required_by.clone();
-                v.sort();
-                v
-            })
-            .unwrap_or_default()
+        self.packages.get(name).map(|p| { let mut v = p.required_by.clone(); v.sort(); v }).unwrap_or_default()
     }
 
-    fn collect_dep_children(
+    fn deps_of(&self, name: &str) -> Vec<String> {
+        self.packages.get(name).map(|p| { let mut v = p.depends_on.clone(); v.sort(); v }).unwrap_or_default()
+    }
+
+    fn children_of(&self, name: &str) -> Vec<String> {
+        if self.transposed { self.deps_of(name) } else { self.req_by(name) }
+    }
+
+    fn impact_of(&self, name: &str) -> usize {
+        if self.transposed {
+            *self.dep_impacts.get(name).unwrap_or(&1)
+        } else {
+            *self.impacts.get(name).unwrap_or(&1)
+        }
+    }
+
+    fn collect_children(
         &self,
         names: Vec<String>,
         depth: usize,
@@ -178,11 +192,11 @@ impl AppState {
     ) {
         for name in names {
             let is_cycle = ancestors.contains(&name);
-            let req_by = if is_cycle { vec![] } else { self.req_by(&name) };
-            let has_children = !req_by.is_empty();
+            let children = if is_cycle { vec![] } else { self.children_of(&name) };
+            let has_children = !children.is_empty();
             let is_expanded = !is_cycle && self.expanded.contains(&name);
             let installed_version = self.packages.get(&name).map(|p| p.version.clone());
-            let impact = *self.impacts.get(&name).unwrap_or(&1);
+            let impact = self.impact_of(&name);
             out.push(VisibleItem {
                 name: name.clone(),
                 depth,
@@ -193,7 +207,7 @@ impl AppState {
             });
             if is_expanded {
                 ancestors.insert(name.clone());
-                self.collect_dep_children(req_by, depth + 1, ancestors, out);
+                self.collect_children(children, depth + 1, ancestors, out);
                 ancestors.remove(&name);
             }
         }
@@ -248,6 +262,9 @@ impl AppState {
         self.impacts = packages.keys()
             .map(|name| (name.clone(), dag_size(name, &packages)))
             .collect();
+        self.dep_impacts = packages.keys()
+            .map(|name| (name.clone(), dep_dag_size(name, &packages)))
+            .collect();
         self.all_roots = packages.iter()
             .map(|(name, pkg)| AllPkgInfo {
                 name: name.clone(),
@@ -272,6 +289,25 @@ impl AppState {
         };
         self.cursor = 0;
     }
+
+    fn toggle_transposed(&mut self) {
+        self.transposed = !self.transposed;
+        self.resort();
+        self.expanded.clear();
+        self.cursor = 0;
+    }
+
+    fn resort(&mut self) {
+        let impact_of = |name: &str| -> usize {
+            if self.transposed {
+                *self.dep_impacts.get(name).unwrap_or(&1)
+            } else {
+                *self.impacts.get(name).unwrap_or(&1)
+            }
+        };
+        self.all_roots.sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)).then(a.name.cmp(&b.name)));
+        self.roots.sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -285,13 +321,22 @@ fn dag_size(name: &str, packages: &HashMap<String, Package>) -> usize {
 }
 
 fn visit_dag(name: &str, packages: &HashMap<String, Package>, visited: &mut HashSet<String>) {
-    if !visited.insert(name.to_string()) {
-        return;
-    }
+    if !visited.insert(name.to_string()) { return; }
     if let Some(pkg) = packages.get(name) {
-        for parent in &pkg.required_by {
-            visit_dag(parent, packages, visited);
-        }
+        for parent in &pkg.required_by { visit_dag(parent, packages, visited); }
+    }
+}
+
+fn dep_dag_size(name: &str, packages: &HashMap<String, Package>) -> usize {
+    let mut visited = HashSet::new();
+    visit_dep_dag(name, packages, &mut visited);
+    visited.len()
+}
+
+fn visit_dep_dag(name: &str, packages: &HashMap<String, Package>, visited: &mut HashSet<String>) {
+    if !visited.insert(name.to_string()) { return; }
+    if let Some(pkg) = packages.get(name) {
+        for dep in &pkg.depends_on { visit_dep_dag(dep, packages, visited); }
     }
 }
 
@@ -373,7 +418,7 @@ fn rebuild_depgraph() -> HashMap<String, Package> {
                     "depends_on": depends_on,
                     "required_by": required_by,
                 }));
-                result.insert(name, Package { version, required_by });
+                result.insert(name, Package { version, required_by, depends_on });
             }
             fields.clear();
         } else if !line.starts_with(' ') {
@@ -430,14 +475,21 @@ fn build_state(
         .collect();
     all_roots.sort_by(|a, b| b.impact.cmp(&a.impact).then(a.name.cmp(&b.name)));
 
+    let dep_impacts: HashMap<String, usize> = packages
+        .keys()
+        .map(|name| (name.clone(), dep_dag_size(name, &packages)))
+        .collect();
+
     AppState {
         roots,
         all_roots,
         packages,
         impacts,
+        dep_impacts,
         expanded: HashSet::new(),
         cursor: 0,
         mode: initial_mode,
+        transposed: false,
         update_succeeded: false,
         info_popup: None,
         search: None,
@@ -504,6 +556,7 @@ fn run_app(
         let mode = state.mode;
         let search_query: Option<String> = state.search.as_ref().map(|s| s.query.clone());
         let show_help = state.show_help;
+        let transposed = state.transposed;
 
         let popup_snapshot = state.info_popup.as_ref().map(|p| {
             (p.package.clone(), p.content.clone(), p.scroll)
@@ -564,16 +617,17 @@ fn run_app(
             let mut list_state = ListState::default();
             list_state.select(Some(cursor));
 
+            let dir = if transposed { "deps↓" } else { "used-by↑" };
             let title = match mode {
-                Mode::Updates => " Pacman Updates — impact  package  old → new ",
-                Mode::AllPackages => " All Packages — impact  package  version ",
+                Mode::Updates => format!(" Pacman Updates [{dir}] — impact  package  old → new "),
+                Mode::AllPackages => format!(" All Packages [{dir}] — impact  package  version "),
             };
 
             let list = List::new(items)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(title),
+                        .title(title.as_str()),
                 )
                 .highlight_style(
                     Style::default()
@@ -603,7 +657,7 @@ fn run_app(
                     Mode::Updates => "a all pkgs",
                     Mode::AllPackages => "a updates",
                 };
-                let base = format!("  ↑↓ navigate   ←→ collapse/expand   i info   / search   r update   d remove   {a_hint}   h help   q quit");
+                let base = format!("  ↑↓ navigate   ←→ collapse/expand   i info   / search   r update   d remove   {a_hint}   t transpose   h help   q quit");
                 if update_succeeded {
                     (format!("{base} (update succeeded)"), Style::default().fg(Color::Green))
                 } else {
@@ -627,6 +681,7 @@ fn run_app(
                         "    r            Run update (sudo pacman -Syu)\n",
                         "    d            Remove package under cursor (sudo pacman -R)\n",
                         "    a            Toggle updates / all packages\n",
+                        "    t            Transpose tree (used-by ↔ depends-on)\n",
                         "    h / ?        Show this help\n",
                         "    q            Quit\n",
                         "\n",
@@ -732,6 +787,7 @@ fn run_app(
                         KeyCode::Char('q') => return Ok(state.update_succeeded),
                         KeyCode::Char('h') | KeyCode::Char('?') => state.show_help = true,
                         KeyCode::Char('a') => state.toggle_mode(),
+                        KeyCode::Char('t') => state.toggle_transposed(),
                         KeyCode::Char('/') => {
                             state.search = Some(SearchState {
                                 query: String::new(),
