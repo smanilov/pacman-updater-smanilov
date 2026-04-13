@@ -30,6 +30,8 @@ class PacmanUpdater extends Applet.IconApplet {
         this._loopEnabled = true;
         // int
         this._updateCount = 0;
+        // int
+        this._topLevelCount = 0;
         // bool
         this._checkingForUpdates = false;
         // bool
@@ -37,6 +39,8 @@ class PacmanUpdater extends Applet.IconApplet {
 
         /** @type {number|null} */
         this._networkWatcherId = null;
+        /** @type {object|null} */
+        this._depgraph = null;
         /** @type {string} */
         this._depgraphPath = metadata.path + '/depgraph.json';
 
@@ -45,8 +49,6 @@ class PacmanUpdater extends Applet.IconApplet {
         this.buildMenu(orientation);
 
         this.updateDepgraph();
-
-        this.startLoop();
     }
 
     // destructor
@@ -78,7 +80,8 @@ class PacmanUpdater extends Applet.IconApplet {
         this._updateTooltip();
     }
 
-    setUpdateCount(updateCount) {
+    setUpdateCounts(topLevelCount, updateCount) {
+        this._topLevelCount = topLevelCount;
         this._updateCount = updateCount;
         this._updateTooltip();
     }
@@ -93,6 +96,10 @@ class PacmanUpdater extends Applet.IconApplet {
         this._updateTooltip();
     }
 
+    _formatUpdateCount() {
+        return `${this._topLevelCount} (${this._updateCount})`;
+    }
+
     _updateTooltip() {
         let loopState = this._loopEnabled ? "running" : "not running";
         if (!this._hasNetwork) {
@@ -102,7 +109,7 @@ class PacmanUpdater extends Applet.IconApplet {
         } else {
             let countMessage = this._updateCount == 0 ?
                 "no updates available" :
-                `updates available: ${this._updateCount}`;
+                `updates available: ${this._formatUpdateCount(this._topLevelCount, this._updateCount)}`;
             this.set_applet_tooltip(`loop is ${loopState}\n${countMessage}`);
         }
     }
@@ -178,6 +185,13 @@ class PacmanUpdater extends Applet.IconApplet {
         log("loop stopped");
     }
 
+    restartLoop() {
+        if (this.isLoopRunning()) {
+            this.stopLoop();
+        }
+        this.startLoop();
+    }
+
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //                               RUN UPDATE                                   //
@@ -251,13 +265,16 @@ class PacmanUpdater extends Applet.IconApplet {
     }
 
     setUpdateMessage(cmdOutput) {
-        let count = cmdOutput ? cmdOutput.split('\n').length : 0;
-        log(`updates available: ${count}`);
-        this.setUpdateCount(count);
-        if (count > 0) {
-            let notification = `updates available: ${count}`;
-            if (count <= 10) {
-                notification += `\n${cmdOutput}`;
+        let lines = cmdOutput ? cmdOutput.split('\n') : [];
+        let total = lines.length;
+        let pkgNames = lines.map(l => l.split(/\s+/)[0]);
+        let topLevel = [...this._explicitRootsOf(pkgNames)];
+        this.setUpdateCounts(topLevel.length, total);
+        log(`updates available: ${this._formatUpdateCount()}`);
+        if (total > 0) {
+            let notification = `updates available: ${this._formatUpdateCount()}`;
+            if (topLevel.length <= 10) {
+                notification += `\n${topLevel.join('\n')}`;
             }
             Main.notify("Pacman Updater", notification);
         }
@@ -313,11 +330,7 @@ class PacmanUpdater extends Applet.IconApplet {
             if (available) {
                 let connectivity = this.getNetworkConnectivity();
                 if (connectivity == Gio.NetworkConnectivity.FULL) {
-                    if (this.isLoopRunning()) {
-                        log(`restarting loop...`);
-                        this.stopLoop();
-                    }
-                    this.startLoop();
+                    this.restartLoop();
                     this.disableNetworkWatcher();
                 }
             }
@@ -388,18 +401,50 @@ class PacmanUpdater extends Applet.IconApplet {
                         v.split(/\s+/).map(d => d.replace(/[><=].*/,''));
                 }
             }
-            if (pkg.name) packages[pkg.name] = pkg;
+            if (pkg.name) {
+                pkg.required_by = [];
+                packages[pkg.name] = pkg;
+            }
+        }
+        for (let [name, pkg] of Object.entries(packages)) {
+            for (let dep of pkg.depends_on) {
+                if (packages[dep]) packages[dep].required_by.push(name);
+            }
         }
         return { last_updated: Math.floor(Date.now() / 1000), packages };
     }
 
+    // For each package in pkgNames, follow required_by edges upward until
+    // reaching explicit packages (or orphaned deps with no required_by).
+    // Returns the set of those roots across all input packages.
+    _explicitRootsOf(pkgNames) {
+        let roots = new Set();
+        let visited = new Set();
+
+        const visit = (name) => {
+            if (visited.has(name)) return;
+            visited.add(name);
+            let pkg = this._depgraph.packages[name];
+            if (!pkg || pkg.reason === 'explicit' || pkg.required_by.length === 0) {
+                roots.add(name);
+                return;
+            }
+            for (let parent of pkg.required_by) visit(parent);
+        };
+
+        for (let name of pkgNames) visit(name);
+        return roots;
+    }
+
     _writeDepgraph(graph) {
+        this._depgraph = graph;
         let file = Gio.File.new_for_path(this._depgraphPath);
         let bytes = new TextEncoder().encode(JSON.stringify(graph, null, 2));
         file.replace_contents(
             bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null
         );
         log(`depgraph updated: ${Object.keys(graph.packages).length} packages`);
+        this.restartLoop();
     }
 }
 

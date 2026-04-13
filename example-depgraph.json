@@ -1,0 +1,33 @@
+{
+  "last_updated": 1776062997,
+  "packages": {
+    "a52dec": {
+      "name": "a52dec",
+      "version": "0.8.0-3",
+      "depends_on": [
+        "glibc"
+      ],
+      "reason": "dependency",
+      "required_by": [
+        "gst-plugins-ugly",
+        "vlc-plugin-a52dec"
+      ]
+    },
+    "aalib": {
+      "name": "aalib",
+      "version": "1.4rc5-19",
+      "depends_on": [
+        "glibc",
+        "gpm",
+        "libx11",
+        "ncurses",
+        "slang"
+      ],
+      "reason": "dependency",
+      "required_by": [
+        "gimp",
+        "gst-plugins-good"
+      ]
+    }
+  }
+}
