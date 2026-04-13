@@ -384,8 +384,8 @@ fn run_app(
                 )
                 .highlight_style(
                     Style::default()
-                        .bg(Color::Blue)
-                        .fg(Color::White)
+                        .bg(Color::Green)
+                        .fg(Color::Black)
                         .add_modifier(Modifier::BOLD),
                 )
                 .highlight_symbol("> ");
