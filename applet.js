@@ -271,6 +271,8 @@ class PacmanUpdater extends Applet.IconApplet {
         let topLevel = [...this._explicitRootsOf(pkgNames)];
         this.setUpdateCounts(topLevel.length, total);
         log(`updates available: ${this._formatUpdateCount()}`);
+        // TEMPORARY: log impact (DAG size via required_by) for each updated package
+        if (total > 0) this._logUpdateImpacts(pkgNames);
         if (total > 0) {
             let notification = `updates available: ${this._formatUpdateCount()}`;
             if (topLevel.length <= 10) {
@@ -434,6 +436,29 @@ class PacmanUpdater extends Applet.IconApplet {
 
         for (let name of pkgNames) visit(name);
         return roots;
+    }
+
+    // TEMPORARY: compute and log the impact of each updatable package,
+    // defined as the number of distinct nodes reachable via required_by
+    // (including the package itself), sorted descending.
+    _logUpdateImpacts(pkgNames) {
+        const dagSize = (startName) => {
+            let visited = new Set();
+            const visit = (name) => {
+                if (visited.has(name)) return;
+                visited.add(name);
+                let pkg = this._depgraph.packages[name];
+                if (!pkg || pkg.reason === 'explicit' || pkg.required_by.length === 0) return;
+                for (let parent of pkg.required_by) visit(parent);
+            };
+            visit(startName);
+            return visited.size;
+        };
+
+        let impacts = pkgNames
+            .map(name => ({ name, impact: dagSize(name) }))
+            .sort((a, b) => b.impact - a.impact);
+        log(`update impacts:\n${impacts.map(({ name, impact }) => `  ${impact}\t${name}`).join('\n')}`);
     }
 
     _writeDepgraph(graph) {

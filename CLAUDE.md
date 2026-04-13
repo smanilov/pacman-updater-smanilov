@@ -43,4 +43,4 @@ The entire applet is a single class `PacmanUpdater` in `applet.js` that extends 
 
 ## Data
 
-`depgraph.json` is written by the applet (keyed by package name, with `reason`, `version`, `depends_on` fields, and a `last_updated` Unix timestamp).
+`depgraph.json` is written by the applet at runtime and is gitignored. `example-depgraph.json` is the committed reference copy showing the schema (keyed by package name, with `name`, `reason`, `version`, `depends_on`, `required_by` fields, and a top-level `last_updated` Unix timestamp).
