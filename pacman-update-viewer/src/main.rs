@@ -548,6 +548,7 @@ fn run_app(
     let max_update_name = state.roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
     let max_old = state.roots.iter().map(|r| r.old_version.len()).max().unwrap_or(10);
     let max_all_name = state.all_roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
+    let mut list_state = ListState::default();
 
     loop {
         let vis = state.visible();
@@ -562,6 +563,7 @@ fn run_app(
             (p.package.clone(), p.content.clone(), p.scroll)
         });
 
+        list_state.select(Some(cursor));
         terminal.draw(|f| {
             let searching = search_query.is_some();
             let areas = Layout::default()
@@ -613,9 +615,6 @@ fn run_app(
                     ListItem::new(Line::from(line))
                 })
                 .collect();
-
-            let mut list_state = ListState::default();
-            list_state.select(Some(cursor));
 
             let dir = if transposed { "deps↓" } else { "used-by↑" };
             let title = match mode {
