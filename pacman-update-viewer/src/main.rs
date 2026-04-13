@@ -272,13 +272,13 @@ impl AppState {
                 impact: *self.impacts.get(name).unwrap_or(&1),
             })
             .collect();
-        self.all_roots.sort_by(|a, b| b.impact.cmp(&a.impact).then(a.name.cmp(&b.name)));
         self.roots.retain(|r| packages.contains_key(&r.name));
         for root in &mut self.roots {
             root.impact = *self.impacts.get(&root.name).unwrap_or(&1);
         }
         self.expanded.retain(|name| packages.contains_key(name));
         self.packages = packages;
+        self.resort();
         self.clamp_cursor();
     }
 
