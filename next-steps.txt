@@ -1,3 +1,3 @@
 Next steps:
 
-1. Create a Rust app to replace the "Run pacman update..." action. I want it to be a CLI tool that visualizes the update change set. As a start, let's list the updates, together with the impact factor of each, after sorting them (see last commit). The user can move up and down the list with the keyboard arrows and the current item is highlighed. If the user presses r (for run) sudo pacman -Syu is triggered as before. If the user presses q the process quits.
+fc-cache -fv ?

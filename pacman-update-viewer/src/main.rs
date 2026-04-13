@@ -59,7 +59,7 @@ struct VisibleItem {
 
 enum ItemKind {
     Root { old_version: String, new_version: String, impact: usize },
-    Dep { installed_version: Option<String> },
+    Dep { installed_version: Option<String>, impact: usize },
 }
 
 struct InfoPopup {
@@ -71,6 +71,8 @@ struct InfoPopup {
 struct AppState {
     roots: Vec<UpdateInfo>,
     packages: HashMap<String, Package>,
+    /// Pre-computed impact (dag_size) for every package in the depgraph.
+    impacts: HashMap<String, usize>,
     expanded: HashSet<String>,
     cursor: usize,
     update_succeeded: bool,
@@ -127,10 +129,11 @@ impl AppState {
             let has_children = !req_by.is_empty();
             let is_expanded = !is_cycle && self.expanded.contains(&name);
             let installed_version = self.packages.get(&name).map(|p| p.version.clone());
+            let impact = *self.impacts.get(&name).unwrap_or(&1);
             out.push(VisibleItem {
                 name: name.clone(),
                 depth,
-                kind: ItemKind::Dep { installed_version },
+                kind: ItemKind::Dep { installed_version, impact },
                 has_children,
                 is_expanded,
                 is_cycle,
@@ -251,10 +254,15 @@ fn load_depgraph() -> Option<Depgraph> {
 fn build_state(updates_raw: Vec<(String, String, String)>, depgraph: Option<Depgraph>) -> AppState {
     let packages = depgraph.map(|d| d.packages).unwrap_or_default();
 
+    let impacts: HashMap<String, usize> = packages
+        .keys()
+        .map(|name| (name.clone(), dag_size(name, &packages)))
+        .collect();
+
     let mut roots: Vec<UpdateInfo> = updates_raw
         .into_iter()
         .map(|(name, old_version, new_version)| {
-            let impact = dag_size(&name, &packages);
+            let impact = *impacts.get(&name).unwrap_or(&1);
             UpdateInfo { name, old_version, new_version, impact }
         })
         .collect();
@@ -264,6 +272,7 @@ fn build_state(updates_raw: Vec<(String, String, String)>, depgraph: Option<Depg
     AppState {
         roots,
         packages,
+        impacts,
         expanded: HashSet::new(),
         cursor: 0,
         update_succeeded: false,
@@ -355,9 +364,9 @@ fn run_app(
                             name_w = max_root_name,
                             old_w = max_old,
                         ),
-                        ItemKind::Dep { installed_version } => {
+                        ItemKind::Dep { installed_version, impact } => {
                             let ver = installed_version.as_deref().unwrap_or("?");
-                            format!("{indent}{icon} {}{cycle_suffix}  {ver}", item.name)
+                            format!("{indent}{icon} {impact:>4}  {}{cycle_suffix}  {ver}", item.name)
                         }
                     };
                     ListItem::new(Line::from(line))

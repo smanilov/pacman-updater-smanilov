@@ -80,9 +80,9 @@ class PacmanUpdater extends Applet.IconApplet {
         this._updateTooltip();
     }
 
-    setUpdateCounts(topLevelCount, updateCount) {
-        this._topLevelCount = topLevelCount;
+    setUpdateCounts(updateCount, impactedCount) {
         this._updateCount = updateCount;
+        this._topLevelCount = impactedCount;
         this._updateTooltip();
     }
 
@@ -97,7 +97,7 @@ class PacmanUpdater extends Applet.IconApplet {
     }
 
     _formatUpdateCount() {
-        return `${this._topLevelCount} (${this._updateCount})`;
+        return `${this._updateCount} (${this._topLevelCount})`;
     }
 
     _updateTooltip() {
@@ -271,16 +271,11 @@ class PacmanUpdater extends Applet.IconApplet {
         let lines = cmdOutput ? cmdOutput.split('\n') : [];
         let total = lines.length;
         let pkgNames = lines.map(l => l.split(/\s+/)[0]);
-        let topLevel = [...this._explicitRootsOf(pkgNames)];
-        this.setUpdateCounts(topLevel.length, total);
+        let impacted = this._allImpactedOf(pkgNames);
+        this.setUpdateCounts(total, impacted.size);
         log(`updates available: ${this._formatUpdateCount()}`);
-        // TEMPORARY: log impact (DAG size via required_by) for each updated package
-        if (total > 0) this._logUpdateImpacts(pkgNames);
         if (total > 0) {
             let notification = `updates available: ${this._formatUpdateCount()}`;
-            if (topLevel.length <= 10) {
-                notification += `\n${topLevel.join('\n')}`;
-            }
             Main.notify("Pacman Updater", notification);
         }
     }
@@ -419,49 +414,22 @@ class PacmanUpdater extends Applet.IconApplet {
         return { last_updated: Math.floor(Date.now() / 1000), packages };
     }
 
-    // For each package in pkgNames, follow required_by edges upward until
-    // reaching explicit packages (or orphaned deps with no required_by).
-    // Returns the set of those roots across all input packages.
-    _explicitRootsOf(pkgNames) {
-        let roots = new Set();
+    // Follow required_by edges upward from each package in pkgNames,
+    // collecting every reachable package (including the starting packages).
+    // Returns the full set of all transitively impacted installed packages.
+    _allImpactedOf(pkgNames) {
         let visited = new Set();
 
         const visit = (name) => {
             if (visited.has(name)) return;
             visited.add(name);
-            let pkg = this._depgraph.packages[name];
-            if (!pkg || pkg.reason === 'explicit' || pkg.required_by.length === 0) {
-                roots.add(name);
-                return;
-            }
+            let pkg = this._depgraph && this._depgraph.packages[name];
+            if (!pkg) return;
             for (let parent of pkg.required_by) visit(parent);
         };
 
         for (let name of pkgNames) visit(name);
-        return roots;
-    }
-
-    // TEMPORARY: compute and log the impact of each updatable package,
-    // defined as the number of distinct nodes reachable via required_by
-    // (including the package itself), sorted descending.
-    _logUpdateImpacts(pkgNames) {
-        const dagSize = (startName) => {
-            let visited = new Set();
-            const visit = (name) => {
-                if (visited.has(name)) return;
-                visited.add(name);
-                let pkg = this._depgraph.packages[name];
-                if (!pkg || pkg.reason === 'explicit' || pkg.required_by.length === 0) return;
-                for (let parent of pkg.required_by) visit(parent);
-            };
-            visit(startName);
-            return visited.size;
-        };
-
-        let impacts = pkgNames
-            .map(name => ({ name, impact: dagSize(name) }))
-            .sort((a, b) => b.impact - a.impact);
-        log(`update impacts:\n${impacts.map(({ name, impact }) => `  ${impact}\t${name}`).join('\n')}`);
+        return visited;
     }
 
     _writeDepgraph(graph) {

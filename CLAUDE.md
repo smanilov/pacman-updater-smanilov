@@ -39,15 +39,19 @@ The entire applet is a single class `PacmanUpdater` in `applet.js` that extends 
 
 **Network awareness** (`NETWORK WATCHER` section): Before checking updates, `hasNetwork()` is called. If there's no network, `checkUpdates()` skips and enables a `Gio.NetworkMonitor` watcher. When full connectivity is restored, the watcher restarts the loop and removes itself.
 
-**Update check** (`CHECK UPDATES` section): Runs `checkupdates` as a subprocess via `Gio.Subprocess`. Counts output lines to determine pending update count. Sends a `Main.notify()` desktop notification if `count > 0`, including the full list for ≤10 updates.
+**Update check** (`CHECK UPDATES` section): Runs `checkupdates` as a subprocess via `Gio.Subprocess`. Parses output lines to get the list of updatable packages, then calls `_allImpactedOf()` to compute the full transitive impact count via `required_by` traversal. Sends a `Main.notify()` desktop notification showing `N (M)` where N = packages being updated and M = all transitively impacted installed packages.
 
 **Depgraph** (`DEPGRAPH` section): `updateDepgraph()` runs `pacman -Qi` asynchronously and writes `depgraph.json` via `_parsePacmanQi` + `_writeDepgraph`. It is called on construction and after a successful `sudo pacman -Syu` (detected via `gnome-terminal --wait` + `spawnCommandLineAsync` success callback). Version constraints are stripped from dep names during parsing.
+
+**Impact count** (`_allImpactedOf`): follows `required_by` edges all the way to the top of the dependency graph (no early stop at explicit packages), collecting every transitively impacted package into a single visited set across all updated packages.
 
 **State fields** (all private, updated via setters that also call `_updateTooltip()`):
 - `_timeout` — Mainloop timer ID (non-null = loop running)
 - `_networkWatcherId` — GIO signal handler ID (non-null = watcher active)
 - `_depgraphPath` — absolute path to `depgraph.json` derived from `metadata.path`
-- `_loopEnabled`, `_updateCount`, `_checkingForUpdates`, `_hasNetwork`
+- `_updateCount` — number of packages with pending updates
+- `_topLevelCount` — total count of all transitively impacted installed packages
+- `_loopEnabled`, `_checkingForUpdates`, `_hasNetwork`
 
 ## Update Viewer (`pacman-update-viewer/`)
 

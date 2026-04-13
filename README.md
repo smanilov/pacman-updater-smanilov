@@ -9,8 +9,9 @@
 
 1. this applet will run `checkupdates` (you need to install it separately)
    repeatedly and count the number of returned lines
-2. if the count is positive, a notification will be shown informing the user
-   there are updates available
+2. if updates are available, a notification is shown as `N (M)` where N is the
+   number of packages being updated and M is the total count of all transitively
+   impacted installed packages (via `required_by` traversal)
 3. from the taskbar, the user can click the smiley and run the updater; this
    opens a terminal running `pacman-update-viewer` — a TUI that lists pending
    updates sorted by impact factor as a collapsible tree
