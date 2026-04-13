@@ -29,6 +29,8 @@ struct Package {
     required_by: Vec<String>,
     #[serde(default)]
     depends_on: Vec<String>,
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +65,7 @@ struct AllPkgInfo {
 struct VisibleItem {
     /// Actual package name, used as the expand/collapse key.
     name: String,
+    groups: Vec<String>,
     depth: usize,
     kind: ItemKind,
     has_children: bool,
@@ -104,6 +107,7 @@ struct AppState {
     info_popup: Option<InfoPopup>,
     search: Option<SearchState>,
     show_help: bool,
+    show_groups: bool,
 }
 
 impl AppState {
@@ -121,6 +125,7 @@ impl AppState {
                     let is_expanded = self.expanded.contains(&root.name);
                     out.push(VisibleItem {
                         name: root.name.clone(),
+                        groups: self.groups_of(&root.name),
                         depth: 0,
                         kind: ItemKind::Root {
                             old_version: root.old_version.clone(),
@@ -144,6 +149,7 @@ impl AppState {
                     let is_expanded = self.expanded.contains(&pkg.name);
                     out.push(VisibleItem {
                         name: pkg.name.clone(),
+                        groups: self.groups_of(&pkg.name),
                         depth: 0,
                         kind: ItemKind::AllPkgRoot {
                             version: pkg.version.clone(),
@@ -169,6 +175,10 @@ impl AppState {
 
     fn deps_of(&self, name: &str) -> Vec<String> {
         self.packages.get(name).map(|p| { let mut v = p.depends_on.clone(); v.sort(); v }).unwrap_or_default()
+    }
+
+    fn groups_of(&self, name: &str) -> Vec<String> {
+        self.packages.get(name).map(|p| p.groups.clone()).unwrap_or_default()
     }
 
     fn children_of(&self, name: &str) -> Vec<String> {
@@ -199,6 +209,7 @@ impl AppState {
             let impact = self.impact_of(&name);
             out.push(VisibleItem {
                 name: name.clone(),
+                groups: self.groups_of(&name),
                 depth,
                 kind: ItemKind::Dep { installed_version, impact },
                 has_children,
@@ -410,6 +421,7 @@ fn rebuild_depgraph() -> HashMap<String, Package> {
                         s[..end].to_string()
                     })
                     .collect();
+                let groups = parse_list("Groups");
 
                 json_pkgs.insert(name.clone(), serde_json::json!({
                     "name": name,
@@ -417,8 +429,9 @@ fn rebuild_depgraph() -> HashMap<String, Package> {
                     "reason": reason,
                     "depends_on": depends_on,
                     "required_by": required_by,
+                    "groups": groups,
                 }));
-                result.insert(name, Package { version, required_by, depends_on });
+                result.insert(name, Package { version, required_by, depends_on, groups });
             }
             fields.clear();
         } else if !line.starts_with(' ') {
@@ -494,6 +507,7 @@ fn build_state(
         info_popup: None,
         search: None,
         show_help: false,
+        show_groups: true,
     }
 }
 
@@ -557,6 +571,7 @@ fn run_app(
         let mode = state.mode;
         let search_query: Option<String> = state.search.as_ref().map(|s| s.query.clone());
         let show_help = state.show_help;
+        let show_groups = state.show_groups;
         let transposed = state.transposed;
 
         let popup_snapshot = state.info_popup.as_ref().map(|p| {
@@ -593,23 +608,28 @@ fn run_app(
                         "▶"
                     };
                     let cycle_suffix = if item.is_cycle { " (↺)" } else { "" };
+                    let grp = if show_groups && !item.groups.is_empty() {
+                        format!("[{}] ", item.groups.join(" "))
+                    } else {
+                        String::new()
+                    };
 
                     let line = match &item.kind {
                         ItemKind::Root { old_version, new_version, impact } => format!(
-                            "{indent}{icon} {impact:>4}  {:<name_w$}  {:<old_w$}  ->  {new_version}{cycle_suffix}",
+                            "{indent}{icon} {impact:>4}  {grp}{:<name_w$}  {:<old_w$}  ->  {new_version}{cycle_suffix}",
                             item.name,
                             old_version,
                             name_w = max_update_name,
                             old_w = max_old,
                         ),
                         ItemKind::AllPkgRoot { version, impact } => format!(
-                            "{indent}{icon} {impact:>4}  {:<name_w$}  {version}{cycle_suffix}",
+                            "{indent}{icon} {impact:>4}  {grp}{:<name_w$}  {version}{cycle_suffix}",
                             item.name,
                             name_w = max_all_name,
                         ),
                         ItemKind::Dep { installed_version, impact } => {
                             let ver = installed_version.as_deref().unwrap_or("?");
-                            format!("{indent}{icon} {impact:>4}  {}{cycle_suffix}  {ver}", item.name)
+                            format!("{indent}{icon} {impact:>4}  {grp}{}{cycle_suffix}  {ver}", item.name)
                         }
                     };
                     ListItem::new(Line::from(line))
@@ -656,7 +676,7 @@ fn run_app(
                     Mode::Updates => "a all pkgs",
                     Mode::AllPackages => "a updates",
                 };
-                let base = format!("  ↑↓ navigate   ←→ collapse/expand   i info   / search   r update   d remove   {a_hint}   t transpose   h help   q quit");
+                let base = format!("  ↑↓ navigate   ←→ collapse/expand   i info   / search   r update   d remove   {a_hint}   t transpose   g groups   h help   q quit");
                 if update_succeeded {
                     (format!("{base} (update succeeded)"), Style::default().fg(Color::Green))
                 } else {
@@ -681,6 +701,7 @@ fn run_app(
                         "    d            Remove package under cursor (sudo pacman -R)\n",
                         "    a            Toggle updates / all packages\n",
                         "    t            Transpose tree (used-by ↔ depends-on)\n",
+                        "    g            Toggle group labels\n",
                         "    h / ?        Show this help\n",
                         "    q            Quit\n",
                         "\n",
@@ -785,6 +806,7 @@ fn run_app(
                     match key.code {
                         KeyCode::Char('q') => return Ok(state.update_succeeded),
                         KeyCode::Char('h') | KeyCode::Char('?') => state.show_help = true,
+                        KeyCode::Char('g') => state.show_groups = !state.show_groups,
                         KeyCode::Char('a') => state.toggle_mode(),
                         KeyCode::Char('t') => state.toggle_transposed(),
                         KeyCode::Char('/') => {
