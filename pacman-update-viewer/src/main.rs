@@ -959,8 +959,8 @@ fn run_app(
                             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                             terminal.show_cursor()?;
 
-                            if let Ok(s) = Command::new("sudo").args(["pacman", "-Syu"]).status() {
-                                if s.success() {
+                            if Command::new("sudo").args(["pacman", "-Syu"]).status().is_ok_and(|s| s.success()) {
+                                if Command::new("fc-cache").args(["-fv"]).status().is_ok_and(|s| s.success()) {
                                     state.update_succeeded = true;
                                 }
                             }

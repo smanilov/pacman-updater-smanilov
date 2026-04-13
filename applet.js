@@ -142,7 +142,7 @@ class PacmanUpdater extends Applet.IconApplet {
         });
         this.menu.addMenuItem(this.toggleLoopItem);
 
-        this.menu.addAction(_("Run pacman update..."), () => {
+        this.menu.addAction(_("Run pacman-update-viewer"), () => {
             this.launchUpdateTerminal();
         });
 

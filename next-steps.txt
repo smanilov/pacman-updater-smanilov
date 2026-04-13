@@ -1,3 +1,7 @@
 Next steps:
 
-fc-cache -fv ?
+0. Update CLAUDE.md and README.md.
+
+1. Let's add to depgraph.json groups and "last updated" based on the Groups and Install Date data from pacman -Qi. Update applet.json and the Rust code to read/write these two. Add a "last updated" column in the Rust app
+
+2. Refactor: create a separate Rust binary that rebuilds the depgraph.json and extract the shared logic in a Rust library; then: applet.js should call Rust to rebuild depgraph.json and not do it itself.
