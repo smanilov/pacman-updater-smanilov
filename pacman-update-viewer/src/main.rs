@@ -17,9 +17,15 @@ use ratatui::{
 };
 use serde::Deserialize;
 
+// ---------------------------------------------------------------------------
+// Depgraph types
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Deserialize)]
 struct Package {
-    reason: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
     required_by: Vec<String>,
 }
 
@@ -28,57 +34,189 @@ struct Depgraph {
     packages: HashMap<String, Package>,
 }
 
-#[derive(Debug)]
-struct UpdateEntry {
+// ---------------------------------------------------------------------------
+// App state
+// ---------------------------------------------------------------------------
+
+struct UpdateInfo {
     name: String,
     old_version: String,
     new_version: String,
     impact: usize,
 }
 
+/// One row in the visible flat list.
+struct VisibleItem {
+    /// Actual package name, used as the expand/collapse key.
+    name: String,
+    depth: usize,
+    kind: ItemKind,
+    has_children: bool,
+    is_expanded: bool,
+    /// True when the package is already an ancestor in the current path (cycle guard).
+    is_cycle: bool,
+}
+
+enum ItemKind {
+    Root { old_version: String, new_version: String, impact: usize },
+    Dep { installed_version: Option<String> },
+}
+
+struct AppState {
+    roots: Vec<UpdateInfo>,
+    packages: HashMap<String, Package>,
+    expanded: HashSet<String>,
+    cursor: usize,
+    update_succeeded: bool,
+}
+
+impl AppState {
+    fn visible(&self) -> Vec<VisibleItem> {
+        let mut out = vec![];
+        for root in &self.roots {
+            let req_by = self.req_by(&root.name);
+            let is_expanded = self.expanded.contains(&root.name);
+            out.push(VisibleItem {
+                name: root.name.clone(),
+                depth: 0,
+                kind: ItemKind::Root {
+                    old_version: root.old_version.clone(),
+                    new_version: root.new_version.clone(),
+                    impact: root.impact,
+                },
+                has_children: !req_by.is_empty(),
+                is_expanded,
+                is_cycle: false,
+            });
+            if is_expanded {
+                let mut ancestors = HashSet::from([root.name.clone()]);
+                self.collect_dep_children(req_by, 1, &mut ancestors, &mut out);
+            }
+        }
+        out
+    }
+
+    fn req_by(&self, name: &str) -> Vec<String> {
+        self.packages
+            .get(name)
+            .map(|p| {
+                let mut v = p.required_by.clone();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
+    }
+
+    fn collect_dep_children(
+        &self,
+        names: Vec<String>,
+        depth: usize,
+        ancestors: &mut HashSet<String>,
+        out: &mut Vec<VisibleItem>,
+    ) {
+        for name in names {
+            let is_cycle = ancestors.contains(&name);
+            let req_by = if is_cycle { vec![] } else { self.req_by(&name) };
+            let has_children = !req_by.is_empty();
+            let is_expanded = !is_cycle && self.expanded.contains(&name);
+            let installed_version = self.packages.get(&name).map(|p| p.version.clone());
+            out.push(VisibleItem {
+                name: name.clone(),
+                depth,
+                kind: ItemKind::Dep { installed_version },
+                has_children,
+                is_expanded,
+                is_cycle,
+            });
+            if is_expanded {
+                ancestors.insert(name.clone());
+                self.collect_dep_children(req_by, depth + 1, ancestors, out);
+                ancestors.remove(&name);
+            }
+        }
+    }
+
+    fn clamp_cursor(&mut self) {
+        let len = self.visible().len();
+        if self.cursor >= len {
+            self.cursor = len.saturating_sub(1);
+        }
+    }
+
+    fn move_up(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    fn move_down(&mut self) {
+        if self.cursor + 1 < self.visible().len() {
+            self.cursor += 1;
+        }
+    }
+
+    fn expand_current(&mut self) {
+        let vis = self.visible();
+        let item = &vis[self.cursor];
+        if item.has_children && !item.is_cycle {
+            self.expanded.insert(item.name.clone());
+        }
+    }
+
+    fn collapse_or_go_to_parent(&mut self) {
+        let vis = self.visible();
+        let item = &vis[self.cursor];
+        let name = item.name.clone();
+        let depth = item.depth;
+        let is_expanded = item.is_expanded;
+        let _ = item;
+
+        if is_expanded {
+            self.expanded.remove(&name);
+            self.clamp_cursor();
+        } else if depth > 0 {
+            if let Some(pos) = vis[..self.cursor].iter().rposition(|i| i.depth == depth - 1) {
+                self.cursor = pos;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Impact computation
+// ---------------------------------------------------------------------------
+
 fn dag_size(name: &str, packages: &HashMap<String, Package>) -> usize {
     let mut visited = HashSet::new();
-    visit(name, packages, &mut visited);
+    visit_dag(name, packages, &mut visited);
     visited.len()
 }
 
-fn visit(name: &str, packages: &HashMap<String, Package>, visited: &mut HashSet<String>) {
-    if visited.contains(name) {
+fn visit_dag(name: &str, packages: &HashMap<String, Package>, visited: &mut HashSet<String>) {
+    if !visited.insert(name.to_string()) {
         return;
     }
-    visited.insert(name.to_string());
     if let Some(pkg) = packages.get(name) {
-        if pkg.reason == "explicit" || pkg.required_by.is_empty() {
-            return;
-        }
         for parent in &pkg.required_by {
-            visit(parent, packages, visited);
+            visit_dag(parent, packages, visited);
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Subprocess helpers
+// ---------------------------------------------------------------------------
+
 fn run_checkupdates() -> Vec<(String, String, String)> {
-    // checkupdates output format: "pkgname old_ver -> new_ver"
-    let output = Command::new("checkupdates").output();
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout
-                .lines()
-                .filter_map(|line| {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 4 {
-                        Some((
-                            parts[0].to_string(),
-                            parts[1].to_string(),
-                            parts[3].to_string(),
-                        ))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
+    // Output format: "pkgname old_ver -> new_ver"
+    match Command::new("checkupdates").output() {
+        Ok(out) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| {
+                let p: Vec<&str> = line.split_whitespace().collect();
+                (p.len() >= 4).then(|| (p[0].to_string(), p[1].to_string(), p[3].to_string()))
+            })
+            .collect(),
         Err(e) => {
             eprintln!("Failed to run checkupdates: {e}");
             vec![]
@@ -99,27 +237,46 @@ fn load_depgraph() -> Option<Depgraph> {
         .ok()
 }
 
+// ---------------------------------------------------------------------------
+// State construction
+// ---------------------------------------------------------------------------
+
+fn build_state(updates_raw: Vec<(String, String, String)>, depgraph: Option<Depgraph>) -> AppState {
+    let packages = depgraph.map(|d| d.packages).unwrap_or_default();
+
+    let mut roots: Vec<UpdateInfo> = updates_raw
+        .into_iter()
+        .map(|(name, old_version, new_version)| {
+            let impact = dag_size(&name, &packages);
+            UpdateInfo { name, old_version, new_version, impact }
+        })
+        .collect();
+
+    roots.sort_by(|a, b| b.impact.cmp(&a.impact));
+
+    AppState {
+        roots,
+        packages,
+        expanded: HashSet::new(),
+        cursor: 0,
+        update_succeeded: false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 fn main() -> Result<(), io::Error> {
     let depgraph = load_depgraph();
     let updates_raw = run_checkupdates();
 
-    let mut entries: Vec<UpdateEntry> = updates_raw
-        .into_iter()
-        .map(|(name, old_version, new_version)| {
-            let impact = depgraph
-                .as_ref()
-                .map(|g| dag_size(&name, &g.packages))
-                .unwrap_or(1);
-            UpdateEntry { name, old_version, new_version, impact }
-        })
-        .collect();
-
-    entries.sort_by(|a, b| b.impact.cmp(&a.impact));
-
-    if entries.is_empty() {
+    if updates_raw.is_empty() {
         println!("No updates available.");
         return Ok(());
     }
+
+    let mut state = build_state(updates_raw, depgraph);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -127,10 +284,7 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut list_state = ListState::default();
-    list_state.select(Some(0));
-
-    let update_succeeded = run_app(&mut terminal, &entries, &mut list_state)?;
+    let update_succeeded = run_app(&mut terminal, &mut state)?;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -139,46 +293,60 @@ fn main() -> Result<(), io::Error> {
     process::exit(if update_succeeded { 0 } else { 1 });
 }
 
-/// Runs the TUI event loop. Returns true if `sudo pacman -Syu` completed
-/// successfully at least once before the user quit.
+// ---------------------------------------------------------------------------
+// TUI loop
+// ---------------------------------------------------------------------------
+
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    entries: &[UpdateEntry],
-    list_state: &mut ListState,
+    state: &mut AppState,
 ) -> Result<bool, io::Error> {
-    let max_name = entries.iter().map(|e| e.name.len()).max().unwrap_or(10);
-    let max_old = entries.iter().map(|e| e.old_version.len()).max().unwrap_or(10);
-
-    let mut update_succeeded = false;
+    let max_root_name = state.roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
+    let max_old = state.roots.iter().map(|r| r.old_version.len()).max().unwrap_or(10);
 
     loop {
+        let vis = state.visible();
+        let cursor = state.cursor;
+        let update_succeeded = state.update_succeeded;
+
         terminal.draw(|f| {
             let [list_area, footer_area] = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(1), Constraint::Length(1)])
                 .areas(f.area());
 
-            let items: Vec<ListItem> = entries
+            let items: Vec<ListItem> = vis
                 .iter()
-                .map(|e| {
-                    let line = format!(
-                        "{:>4}  {:<name_w$}  {:<old_w$}  ->  {}",
-                        e.impact,
-                        e.name,
-                        e.old_version,
-                        e.new_version,
-                        name_w = max_name,
-                        old_w = max_old,
-                    );
+                .map(|item| {
+                    let indent = "  ".repeat(item.depth);
+                    let icon = if item.is_cycle || !item.has_children {
+                        " "
+                    } else if item.is_expanded {
+                        "▼"
+                    } else {
+                        "▶"
+                    };
+                    let cycle_suffix = if item.is_cycle { " (↺)" } else { "" };
+
+                    let line = match &item.kind {
+                        ItemKind::Root { old_version, new_version, impact } => format!(
+                            "{indent}{icon} {impact:>4}  {:<name_w$}  {:<old_w$}  ->  {new_version}{cycle_suffix}",
+                            item.name,
+                            old_version,
+                            name_w = max_root_name,
+                            old_w = max_old,
+                        ),
+                        ItemKind::Dep { installed_version } => {
+                            let ver = installed_version.as_deref().unwrap_or("?");
+                            format!("{indent}{icon} {}{cycle_suffix}  {ver}", item.name)
+                        }
+                    };
                     ListItem::new(Line::from(line))
                 })
                 .collect();
 
-            let footer_text = if update_succeeded {
-                "  ↑↓ navigate   r run update   q quit (update succeeded)"
-            } else {
-                "  ↑↓ navigate   r run update   q quit"
-            };
+            let mut list_state = ListState::default();
+            list_state.select(Some(cursor));
 
             let list = List::new(items)
                 .block(
@@ -194,34 +362,34 @@ fn run_app(
                 )
                 .highlight_symbol("> ");
 
-            f.render_stateful_widget(list, list_area, list_state);
+            f.render_stateful_widget(list, list_area, &mut list_state);
 
-            let footer_style = if update_succeeded {
-                Style::default().fg(Color::Green)
+            let (footer_text, footer_style) = if update_succeeded {
+                (
+                    "  ↑↓ navigate   ←→ collapse/expand   r run update   q quit (update succeeded)",
+                    Style::default().fg(Color::Green),
+                )
             } else {
-                Style::default().fg(Color::DarkGray)
+                (
+                    "  ↑↓ navigate   ←→ collapse/expand   r run update   q quit",
+                    Style::default().fg(Color::DarkGray),
+                )
             };
-            let footer = Paragraph::new(footer_text).style(footer_style);
-            f.render_widget(footer, footer_area);
+            f.render_widget(Paragraph::new(footer_text).style(footer_style), footer_area);
         })?;
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('q') => return Ok(update_succeeded),
+                    KeyCode::Char('q') => return Ok(state.update_succeeded),
                     KeyCode::Char('r') => {
-                        // Suspend TUI, run pacman, resume TUI.
                         disable_raw_mode()?;
                         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                         terminal.show_cursor()?;
 
-                        let status = Command::new("sudo")
-                            .args(["pacman", "-Syu"])
-                            .status();
-
-                        if let Ok(s) = status {
+                        if let Ok(s) = Command::new("sudo").args(["pacman", "-Syu"]).status() {
                             if s.success() {
-                                update_succeeded = true;
+                                state.update_succeeded = true;
                             }
                         }
 
@@ -229,18 +397,10 @@ fn run_app(
                         execute!(terminal.backend_mut(), EnterAlternateScreen)?;
                         terminal.clear()?;
                     }
-                    KeyCode::Up => {
-                        let i = list_state.selected().unwrap_or(0);
-                        if i > 0 {
-                            list_state.select(Some(i - 1));
-                        }
-                    }
-                    KeyCode::Down => {
-                        let i = list_state.selected().unwrap_or(0);
-                        if i + 1 < entries.len() {
-                            list_state.select(Some(i + 1));
-                        }
-                    }
+                    KeyCode::Up => state.move_up(),
+                    KeyCode::Down => state.move_down(),
+                    KeyCode::Right => state.expand_current(),
+                    KeyCode::Left => state.collapse_or_go_to_parent(),
                     _ => {}
                 }
             }

@@ -13,9 +13,13 @@
    there are updates available
 3. from the taskbar, the user can click the smiley and run the updater; this
    opens a terminal running `pacman-update-viewer` — a TUI that lists pending
-   updates sorted by impact factor, with keyboard navigation
-4. inside the viewer: `↑`/`↓` to navigate, `r` to run `sudo pacman -Syu`,
-   `q` to quit; the viewer exits with code 0 only if the update succeeded
+   updates sorted by impact factor as a collapsible tree
+4. inside the viewer:
+   - `↑`/`↓` navigate the list
+   - `→` expands a node to show all installed packages that depend on it
+   - `←` collapses an expanded node, or moves to the parent if already collapsed
+   - `r` runs `sudo pacman -Syu` (suspends the TUI, then resumes it)
+   - `q` quits; exits with code 0 only if the update succeeded
 5. after the update completes successfully, `depgraph.json` is refreshed
    automatically; it is also refreshed on applet startup
 

@@ -56,11 +56,13 @@ A Rust TUI app (`src/main.rs`) that replaces the old raw `sudo pacman -Syu` term
 **Flow:**
 1. Runs `checkupdates` to get the pending update list
 2. Reads `depgraph.json` to compute an impact factor per package (DAG size via `required_by` edges)
-3. Sorts updates by impact descending and renders them in an interactive list
+3. Sorts updates by impact descending and renders them as a collapsible tree
 4. `r` suspends the TUI, runs `sudo pacman -Syu` in the foreground, then resumes the TUI; sets an internal `update_succeeded` flag on exit code 0
 5. `q` exits with code 0 if `update_succeeded`, else code 1
 
 The applet's `spawnCommandLineAsync` success callback (which triggers `updateDepgraph()`) fires only when the viewer exits with code 0 — i.e., only after a successful update.
+
+**Tree structure:** each updateable package is a root node. Expanding a node (`→`) shows all installed packages that `required_by` it (from the full depgraph), sorted alphabetically. Those nodes can be expanded further to show what requires them, and so on. Packages that are already an ancestor in the current path are shown with a `(↺)` suffix and cannot be expanded. Collapsing (`←`) collapses the current node; pressing `←` on a collapsed node moves the cursor to its parent.
 
 ## Data
 
