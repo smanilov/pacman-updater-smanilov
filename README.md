@@ -20,16 +20,29 @@
    - `→` expands a node to show all installed packages that depend on it
    - `←` collapses an expanded node, or moves to the parent if already collapsed
    - `i` shows `pacman -Qi` output for the current item in a scrollable popup
+   - `/` filters the visible root packages by name; `Esc` cancels and `Enter`
+     keeps the selected match
+   - `a` toggles between pending updates and all installed packages
+   - `t` transposes the tree between `required_by` (`used-by`) and
+     `depends_on` (`deps`) traversal
+   - `g` toggles package group labels
+   - `d` removes the currently selected package with `sudo pacman -R`, then
+     rebuilds `depgraph.json`
+   - `h` or `?` opens the help popup
    - `r` runs `sudo pacman -Syu` (suspends the TUI, then resumes it)
    - `q` quits; exits with code 0 only if the update succeeded
-5. after the update completes successfully, `depgraph.json` is refreshed
-   automatically; it is also refreshed on applet startup
+5. if there are no pending updates but `depgraph.json` exists, the viewer opens
+   directly in all-packages mode instead of exiting
+6. after the update completes successfully, `depgraph.json` is refreshed
+   automatically; it is also refreshed on applet startup and rebuilt after
+   package deletion from inside the viewer
 
 # Data
 
 depgraph.json is written by the applet and contains the dependency graph between
 pacman managed packages. It is updated on startup and after each successful
-`sudo pacman -Syu`. An example follows:
+`sudo pacman -Syu`. The viewer also rewrites it after package deletion. An
+example follows:
 
 ```
 {
@@ -37,15 +50,19 @@ pacman managed packages. It is updated on startup and after each successful
   "packages": {
     "firefox": {
       "name": "firefox",
-      "reason": "explicit",
       "version": "123.0-1",
-      "depends_on": ["nss", "gtk3"]
+      "depends_on": ["nss", "gtk3"],
+      "reason": "explicit",
+      "required_by": [],
+      "groups": []
     },
     "nss": {
       "name": "nss",
-      "reason": "dependency",
       "version": "3.98-1",
-      "depends_on": ["nspr"]
+      "depends_on": ["nspr"],
+      "reason": "dependency",
+      "required_by": ["firefox"],
+      "groups": []
     }
   }
 }

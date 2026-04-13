@@ -41,7 +41,7 @@ The entire applet is a single class `PacmanUpdater` in `applet.js` that extends 
 
 **Update check** (`CHECK UPDATES` section): Runs `checkupdates` as a subprocess via `Gio.Subprocess`. Parses output lines to get the list of updatable packages, then calls `_allImpactedOf()` to compute the full transitive impact count via `required_by` traversal. Sends a `Main.notify()` desktop notification showing `N (M)` where N = packages being updated and M = all transitively impacted installed packages.
 
-**Depgraph** (`DEPGRAPH` section): `updateDepgraph()` runs `pacman -Qi` asynchronously and writes `depgraph.json` via `_parsePacmanQi` + `_writeDepgraph`. It is called on construction and after a successful `sudo pacman -Syu` (detected via `gnome-terminal --wait` + `spawnCommandLineAsync` success callback). Version constraints are stripped from dep names during parsing.
+**Depgraph** (`DEPGRAPH` section): `updateDepgraph()` runs `pacman -Qi` asynchronously and writes `depgraph.json` via `_parsePacmanQi` + `_writeDepgraph`. It is called on construction and after a successful viewer run (detected via `gnome-terminal --wait` + `spawnCommandLineAsync` success callback). Version constraints are stripped from dep names during parsing.
 
 **Impact count** (`_allImpactedOf`): follows `required_by` edges all the way to the top of the dependency graph (no early stop at explicit packages), collecting every transitively impacted package into a single visited set across all updated packages.
 
@@ -59,17 +59,28 @@ A Rust TUI app (`src/main.rs`) that replaces the old raw `sudo pacman -Syu` term
 
 **Flow:**
 1. Runs `checkupdates` to get the pending update list
-2. Reads `depgraph.json` to compute an impact factor per package (DAG size via `required_by` edges)
-3. Sorts updates by impact descending and renders them as a collapsible tree
-4. `r` suspends the TUI, runs `sudo pacman -Syu` in the foreground, then resumes the TUI; sets an internal `update_succeeded` flag on exit code 0
-5. `q` exits with code 0 if `update_succeeded`, else code 1
+2. Reads `depgraph.json` to compute both reverse impact (`required_by`) and forward impact (`depends_on`)
+3. Starts in updates mode, or all-packages mode if there are no pending updates but a depgraph is available
+4. Sorts root rows by the active impact direction and renders them as a collapsible tree
+5. `r` suspends the TUI, runs `sudo pacman -Syu` in the foreground, then resumes the TUI; sets an internal `update_succeeded` flag on exit code 0
+6. `d` suspends the TUI, runs `sudo pacman -R <package>`, rebuilds `depgraph.json`, reloads package state, and re-sorts
+7. `q` exits with code 0 if `update_succeeded`, else code 1
 
 The applet's `spawnCommandLineAsync` success callback (which triggers `updateDepgraph()`) fires only when the viewer exits with code 0 — i.e., only after a successful update.
 
-**Tree structure:** each updateable package is a root node. Expanding a node (`→`) shows all installed packages that `required_by` it (from the full depgraph), sorted alphabetically. Those nodes can be expanded further to show what requires them, and so on. Packages that are already an ancestor in the current path are shown with a `(↺)` suffix and cannot be expanded. Collapsing (`←`) collapses the current node; pressing `←` on a collapsed node moves the cursor to its parent.
+**Modes and controls:**
+- `a` toggles updates vs all-packages mode
+- `t` toggles tree direction between `used-by` (`required_by`) and `deps` (`depends_on`)
+- `/` enters search mode, filtering visible root rows by package name
+- `g` toggles package group labels
+- `h` / `?` opens the help overlay
+
+**Tree structure:** each updateable package or installed package root is shown as a top-level node. Expanding a node (`→`) shows either the packages that `required_by` it or the packages it `depends_on`, depending on the current transpose state. Child rows are sorted alphabetically. Packages that are already an ancestor in the current path are shown with a `(↺)` suffix and cannot be expanded. Collapsing (`←`) collapses the current node; pressing `←` on a collapsed node moves the cursor to its parent.
 
 **Info popup:** pressing `i` on any node runs `pacman -Qi <package>` and displays the output in a scrollable overlay (`↑`/`↓` to scroll, any other key to close).
 
+**Viewer rebuild path:** the Rust binary currently resolves `depgraph.json` via `$HOME/.local/share/cinnamon/applets/pacman-updater@smanilov/depgraph.json`, not via the applet metadata path.
+
 ## Data
 
-`depgraph.json` is written by the applet at runtime and is gitignored. `example-depgraph.json` is the committed reference copy showing the schema (keyed by package name, with `name`, `reason`, `version`, `depends_on`, `required_by` fields, and a top-level `last_updated` Unix timestamp).
+`depgraph.json` is written at runtime and is gitignored. It is produced by the applet on startup and after a successful update, and by the viewer after package deletion. `example-depgraph.json` is the committed reference copy showing the schema (keyed by package name, with `name`, `version`, `reason`, `depends_on`, `required_by`, `groups` fields, and a top-level `last_updated` Unix timestamp).
