@@ -15,7 +15,7 @@ class PacmanUpdater extends Applet.IconApplet {
     constructor(metadata, orientation, panel_height, instance_id) {
         super(orientation, panel_height, instance_id);
 
-        log("pacman updater started -- version 1.0.0");
+        log("pacman updater started -- version 1.1.0");
 
         /** @type {number|null} ID of the Mainloop timeout */
         this._timeout = null;
