@@ -64,8 +64,10 @@ struct AllPkgInfo {
 
 /// One row in the visible flat list.
 struct VisibleItem {
-    /// Actual package name, used as the expand/collapse key.
+    /// Actual package name.
     name: String,
+    /// Full tree path used as the expand/collapse key.
+    key: String,
     groups: Vec<String>,
     depth: usize,
     kind: ItemKind,
@@ -112,6 +114,10 @@ struct AppState {
 }
 
 impl AppState {
+    fn path_key(path: &[String]) -> String {
+        path.join("\u{1f}")
+    }
+
     fn visible(&self) -> Vec<VisibleItem> {
         let query = self.search.as_ref().map(|s| s.query.to_lowercase());
         let matches = |name: &str| -> bool {
@@ -123,9 +129,12 @@ impl AppState {
                 for root in &self.roots {
                     if !matches(&root.name) { continue; }
                     let children = self.children_of(&root.name);
-                    let is_expanded = self.expanded.contains(&root.name);
+                    let path = vec![root.name.clone()];
+                    let key = Self::path_key(&path);
+                    let is_expanded = self.expanded.contains(&key);
                     out.push(VisibleItem {
                         name: root.name.clone(),
+                        key,
                         groups: self.groups_of(&root.name),
                         depth: 0,
                         kind: ItemKind::Root {
@@ -139,7 +148,7 @@ impl AppState {
                     });
                     if is_expanded {
                         let mut ancestors = HashSet::from([root.name.clone()]);
-                        self.collect_children(children, 1, &mut ancestors, &mut out);
+                        self.collect_children(children, path, 1, &mut ancestors, &mut out);
                     }
                 }
             }
@@ -147,9 +156,12 @@ impl AppState {
                 for pkg in &self.all_roots {
                     if !matches(&pkg.name) { continue; }
                     let children = self.children_of(&pkg.name);
-                    let is_expanded = self.expanded.contains(&pkg.name);
+                    let path = vec![pkg.name.clone()];
+                    let key = Self::path_key(&path);
+                    let is_expanded = self.expanded.contains(&key);
                     out.push(VisibleItem {
                         name: pkg.name.clone(),
+                        key,
                         groups: self.groups_of(&pkg.name),
                         depth: 0,
                         kind: ItemKind::AllPkgRoot {
@@ -162,7 +174,7 @@ impl AppState {
                     });
                     if is_expanded {
                         let mut ancestors = HashSet::from([pkg.name.clone()]);
-                        self.collect_children(children, 1, &mut ancestors, &mut out);
+                        self.collect_children(children, path, 1, &mut ancestors, &mut out);
                     }
                 }
             }
@@ -197,19 +209,24 @@ impl AppState {
     fn collect_children(
         &self,
         names: Vec<String>,
+        parent_path: Vec<String>,
         depth: usize,
         ancestors: &mut HashSet<String>,
         out: &mut Vec<VisibleItem>,
     ) {
         for name in names {
+            let mut path = parent_path.clone();
+            path.push(name.clone());
+            let key = Self::path_key(&path);
             let is_cycle = ancestors.contains(&name);
             let children = if is_cycle { vec![] } else { self.children_of(&name) };
             let has_children = !children.is_empty();
-            let is_expanded = !is_cycle && self.expanded.contains(&name);
+            let is_expanded = !is_cycle && self.expanded.contains(&key);
             let installed_version = self.packages.get(&name).map(|p| p.version.clone());
             let impact = self.impact_of(&name);
             out.push(VisibleItem {
                 name: name.clone(),
+                key,
                 groups: self.groups_of(&name),
                 depth,
                 kind: ItemKind::Dep { installed_version, impact },
@@ -219,7 +236,7 @@ impl AppState {
             });
             if is_expanded {
                 ancestors.insert(name.clone());
-                self.collect_children(children, depth + 1, ancestors, out);
+                self.collect_children(children, path, depth + 1, ancestors, out);
                 ancestors.remove(&name);
             }
         }
@@ -248,20 +265,20 @@ impl AppState {
         let vis = self.visible();
         let item = &vis[self.cursor];
         if item.has_children && !item.is_cycle {
-            self.expanded.insert(item.name.clone());
+            self.expanded.insert(item.key.clone());
         }
     }
 
     fn collapse_or_go_to_parent(&mut self) {
         let vis = self.visible();
         let item = &vis[self.cursor];
-        let name = item.name.clone();
+        let key = item.key.clone();
         let depth = item.depth;
         let is_expanded = item.is_expanded;
         let _ = item;
 
         if is_expanded {
-            self.expanded.remove(&name);
+            self.expanded.remove(&key);
             self.clamp_cursor();
         } else if depth > 0 {
             if let Some(pos) = vis[..self.cursor].iter().rposition(|i| i.depth == depth - 1) {
@@ -288,7 +305,9 @@ impl AppState {
         for root in &mut self.roots {
             root.impact = *self.impacts.get(&root.name).unwrap_or(&1);
         }
-        self.expanded.retain(|name| packages.contains_key(name));
+        self.expanded.retain(|key| {
+            key.split('\u{1f}').all(|name| packages.contains_key(name))
+        });
         self.packages = packages;
         self.resort();
         self.clamp_cursor();
@@ -303,10 +322,17 @@ impl AppState {
     }
 
     fn toggle_transposed(&mut self) {
+        let pinned = self.visible().get(self.cursor).map(|item| item.name.clone());
         self.transposed = !self.transposed;
         self.resort();
         self.expanded.clear();
-        self.cursor = 0;
+        if let Some(name) = pinned {
+            if !self.pin_package(&name) {
+                self.cursor = 0;
+            }
+        } else {
+            self.cursor = 0;
+        }
     }
 
     fn resort(&mut self) {
@@ -319,6 +345,58 @@ impl AppState {
         };
         self.all_roots.sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)).then(a.name.cmp(&b.name)));
         self.roots.sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)));
+    }
+
+    fn root_names(&self) -> Vec<String> {
+        match self.mode {
+            Mode::Updates => self.roots.iter().map(|root| root.name.clone()).collect(),
+            Mode::AllPackages => self.all_roots.iter().map(|root| root.name.clone()).collect(),
+        }
+    }
+
+    fn pin_package(&mut self, target: &str) -> bool {
+        for root in self.root_names() {
+            let mut path = vec![root.clone()];
+            let mut ancestors = HashSet::from([root.clone()]);
+            if self.find_path_from(&root, target, &mut ancestors, &mut path) {
+                for depth in 1..path.len() {
+                    self.expanded.insert(Self::path_key(&path[..depth]));
+                }
+                let vis = self.visible();
+                if let Some(pos) = vis.iter().position(|item| item.name == target) {
+                    self.cursor = pos;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn find_path_from(
+        &self,
+        current: &str,
+        target: &str,
+        ancestors: &mut HashSet<String>,
+        path: &mut Vec<String>,
+    ) -> bool {
+        if current == target {
+            return true;
+        }
+
+        for child in self.children_of(current) {
+            if ancestors.contains(&child) {
+                continue;
+            }
+            ancestors.insert(child.clone());
+            path.push(child.clone());
+            if self.find_path_from(&child, target, ancestors, path) {
+                return true;
+            }
+            path.pop();
+            ancestors.remove(&child);
+        }
+
+        false
     }
 }
 
