@@ -105,7 +105,7 @@ struct SearchState {
 }
 
 struct AppState {
-    roots: Vec<UpdateInfo>,
+    updates_roots: Vec<UpdateInfo>,
     all_roots: Vec<AllPkgInfo>,
     packages: HashMap<String, Package>,
     /// Pre-computed reverse-impact (dag_size via required_by) for every package.
@@ -138,7 +138,7 @@ impl AppState {
         let mut out = vec![];
         match self.mode {
             Mode::Updates => {
-                for root in &self.roots {
+                for root in &self.updates_roots {
                     if !matches(&root.name) {
                         continue;
                     }
@@ -373,8 +373,9 @@ impl AppState {
                 impact: *self.impacts.get(name).unwrap_or(&1),
             })
             .collect();
-        self.roots.retain(|r| packages.contains_key(&r.name));
-        for root in &mut self.roots {
+        self.updates_roots
+            .retain(|r| packages.contains_key(&r.name));
+        for root in &mut self.updates_roots {
             root.impact = *self.impacts.get(&root.name).unwrap_or(&1);
         }
         self.expanded
@@ -422,13 +423,17 @@ impl AppState {
                 .cmp(&impact_of(&a.name))
                 .then(a.name.cmp(&b.name))
         });
-        self.roots
+        self.updates_roots
             .sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)));
     }
 
     fn root_names(&self) -> Vec<String> {
         match self.mode {
-            Mode::Updates => self.roots.iter().map(|root| root.name.clone()).collect(),
+            Mode::Updates => self
+                .updates_roots
+                .iter()
+                .map(|root| root.name.clone())
+                .collect(),
             Mode::AllPackages => self
                 .all_roots
                 .iter()
@@ -662,7 +667,7 @@ fn build_state(
         .map(|name| (name.clone(), dag_size(name, &packages)))
         .collect();
 
-    let mut roots: Vec<UpdateInfo> = updates_raw
+    let mut updates_roots: Vec<UpdateInfo> = updates_raw
         .into_iter()
         .map(|(name, old_version, new_version)| {
             let impact = *impacts.get(&name).unwrap_or(&1);
@@ -674,7 +679,7 @@ fn build_state(
             }
         })
         .collect();
-    roots.sort_by(|a, b| b.impact.cmp(&a.impact));
+    updates_roots.sort_by(|a, b| b.impact.cmp(&a.impact));
 
     let mut all_roots: Vec<AllPkgInfo> = packages
         .iter()
@@ -695,7 +700,7 @@ fn build_state(
         .collect();
 
     AppState {
-        roots,
+        updates_roots,
         all_roots,
         packages,
         impacts,
@@ -807,9 +812,14 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut AppState,
 ) -> Result<bool, io::Error> {
-    let max_update_name = state.roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
+    let max_update_name = state
+        .updates_roots
+        .iter()
+        .map(|r| r.name.len())
+        .max()
+        .unwrap_or(10);
     let max_old = state
-        .roots
+        .updates_roots
         .iter()
         .map(|r| r.old_version.len())
         .max()
