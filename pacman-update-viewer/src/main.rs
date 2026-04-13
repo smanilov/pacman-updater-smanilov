@@ -261,6 +261,28 @@ impl AppState {
         }
     }
 
+    fn page_up(&mut self, amount: usize) {
+        self.cursor = self.cursor.saturating_sub(amount.max(1));
+    }
+
+    fn page_down(&mut self, amount: usize) {
+        let len = self.visible().len();
+        if len == 0 {
+            self.cursor = 0;
+            return;
+        }
+        self.cursor = (self.cursor + amount.max(1)).min(len - 1);
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_end(&mut self) {
+        let len = self.visible().len();
+        self.cursor = len.saturating_sub(1);
+    }
+
     fn expand_current(&mut self) {
         let vis = self.visible();
         let item = &vis[self.cursor];
@@ -676,6 +698,7 @@ fn run_app(
 
     loop {
         let vis = state.visible();
+        let mut page_step = 1usize;
         let cursor = state.cursor;
         let update_succeeded = state.update_succeeded;
         let mode = state.mode;
@@ -700,6 +723,7 @@ fn run_app(
                 })
                 .split(f.area());
             let list_area = areas[0];
+            page_step = usize::from(list_area.height.saturating_sub(2)).max(1);
             let (search_area, footer_area) = if searching {
                 (Some(areas[1]), areas[2])
             } else {
@@ -792,6 +816,8 @@ fn run_app(
                         "  Normal mode\n",
                         "\n",
                         "    ↑ / ↓        Navigate\n",
+                        "    PgUp / PgDn  Move one page\n",
+                        "    Home / End   Jump to start / end\n",
                         "    → / ←        Expand / collapse\n",
                         "    i            Package info (pacman -Qi)\n",
                         "    /            Search packages\n",
@@ -806,6 +832,8 @@ fn run_app(
                         "  Search mode\n",
                         "\n",
                         "    Type         Filter packages by name\n",
+                        "    PgUp / PgDn  Move one page\n",
+                        "    Home / End   Jump to start / end\n",
                         "    Backspace    Delete last character\n",
                         "    ↑ / ↓        Navigate filtered list\n",
                         "    Enter        Confirm selection\n",
@@ -884,6 +912,10 @@ fn run_app(
                         }
                         KeyCode::Up => state.move_up(),
                         KeyCode::Down => state.move_down(),
+                        KeyCode::PageUp => state.page_up(page_step),
+                        KeyCode::PageDown => state.page_down(page_step),
+                        KeyCode::Home => state.move_home(),
+                        KeyCode::End => state.move_end(),
                         KeyCode::Backspace => {
                             if let Some(s) = &mut state.search {
                                 s.query.pop();
@@ -953,6 +985,10 @@ fn run_app(
                         }
                         KeyCode::Up => state.move_up(),
                         KeyCode::Down => state.move_down(),
+                        KeyCode::PageUp => state.page_up(page_step),
+                        KeyCode::PageDown => state.page_down(page_step),
+                        KeyCode::Home => state.move_home(),
+                        KeyCode::End => state.move_end(),
                         KeyCode::Right => state.expand_current(),
                         KeyCode::Left => state.collapse_or_go_to_parent(),
                         _ => {}
