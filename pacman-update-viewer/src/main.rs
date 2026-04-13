@@ -9,10 +9,10 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
 };
 use serde::Deserialize;
@@ -62,12 +62,19 @@ enum ItemKind {
     Dep { installed_version: Option<String> },
 }
 
+struct InfoPopup {
+    package: String,
+    content: String,
+    scroll: u16,
+}
+
 struct AppState {
     roots: Vec<UpdateInfo>,
     packages: HashMap<String, Package>,
     expanded: HashSet<String>,
     cursor: usize,
     update_succeeded: bool,
+    info_popup: Option<InfoPopup>,
 }
 
 impl AppState {
@@ -260,6 +267,14 @@ fn build_state(updates_raw: Vec<(String, String, String)>, depgraph: Option<Depg
         expanded: HashSet::new(),
         cursor: 0,
         update_succeeded: false,
+        info_popup: None,
+    }
+}
+
+fn pacman_qi(package: &str) -> String {
+    match Command::new("pacman").args(["-Qi", package]).output() {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(e) => format!("Failed to run pacman -Qi: {e}"),
     }
 }
 
@@ -308,6 +323,10 @@ fn run_app(
         let vis = state.visible();
         let cursor = state.cursor;
         let update_succeeded = state.update_succeeded;
+
+        let popup_snapshot = state.info_popup.as_ref().map(|p| {
+            (p.package.clone(), p.content.clone(), p.scroll)
+        });
 
         terminal.draw(|f| {
             let [list_area, footer_area] = Layout::default()
@@ -366,44 +385,105 @@ fn run_app(
 
             let (footer_text, footer_style) = if update_succeeded {
                 (
-                    "  ↑↓ navigate   ←→ collapse/expand   r run update   q quit (update succeeded)",
+                    "  ↑↓ navigate   ←→ collapse/expand   i info   r run update   q quit (update succeeded)",
                     Style::default().fg(Color::Green),
                 )
             } else {
                 (
-                    "  ↑↓ navigate   ←→ collapse/expand   r run update   q quit",
+                    "  ↑↓ navigate   ←→ collapse/expand   i info   r run update   q quit",
                     Style::default().fg(Color::DarkGray),
                 )
             };
             f.render_widget(Paragraph::new(footer_text).style(footer_style), footer_area);
+
+            // Info popup overlay
+            if let Some((pkg, content, scroll)) = &popup_snapshot {
+                let area = centered_rect(80, 80, f.area());
+                f.render_widget(Clear, area);
+                f.render_widget(
+                    Paragraph::new(content.as_str())
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(format!(" pacman -Qi {pkg} — ↑↓ scroll   any other key closes "))
+                                .border_style(Style::default().fg(Color::Yellow)),
+                        )
+                        .wrap(Wrap { trim: false })
+                        .scroll((*scroll, 0)),
+                    area,
+                );
+            }
         })?;
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') => return Ok(state.update_succeeded),
-                    KeyCode::Char('r') => {
-                        disable_raw_mode()?;
-                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                        terminal.show_cursor()?;
-
-                        if let Ok(s) = Command::new("sudo").args(["pacman", "-Syu"]).status() {
-                            if s.success() {
-                                state.update_succeeded = true;
+                if state.info_popup.is_some() {
+                    match key.code {
+                        KeyCode::Up => {
+                            if let Some(p) = &mut state.info_popup {
+                                p.scroll = p.scroll.saturating_sub(1);
                             }
                         }
-
-                        enable_raw_mode()?;
-                        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-                        terminal.clear()?;
+                        KeyCode::Down => {
+                            if let Some(p) = &mut state.info_popup {
+                                p.scroll += 1;
+                            }
+                        }
+                        _ => state.info_popup = None,
                     }
-                    KeyCode::Up => state.move_up(),
-                    KeyCode::Down => state.move_down(),
-                    KeyCode::Right => state.expand_current(),
-                    KeyCode::Left => state.collapse_or_go_to_parent(),
-                    _ => {}
+                } else {
+                    match key.code {
+                        KeyCode::Char('q') => return Ok(state.update_succeeded),
+                        KeyCode::Char('i') => {
+                            let name = vis[cursor].name.clone();
+                            state.info_popup = Some(InfoPopup {
+                                content: pacman_qi(&name),
+                                package: name,
+                                scroll: 0,
+                            });
+                        }
+                        KeyCode::Char('r') => {
+                            disable_raw_mode()?;
+                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                            terminal.show_cursor()?;
+
+                            if let Ok(s) = Command::new("sudo").args(["pacman", "-Syu"]).status() {
+                                if s.success() {
+                                    state.update_succeeded = true;
+                                }
+                            }
+
+                            enable_raw_mode()?;
+                            execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                            terminal.clear()?;
+                        }
+                        KeyCode::Up => state.move_up(),
+                        KeyCode::Down => state.move_down(),
+                        KeyCode::Right => state.expand_current(),
+                        KeyCode::Left => state.collapse_or_go_to_parent(),
+                        _ => {}
+                    }
                 }
             }
         }
     }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vert = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vert[1])[1]
 }

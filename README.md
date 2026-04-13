@@ -18,6 +18,7 @@
    - `↑`/`↓` navigate the list
    - `→` expands a node to show all installed packages that depend on it
    - `←` collapses an expanded node, or moves to the parent if already collapsed
+   - `i` shows `pacman -Qi` output for the current item in a scrollable popup
    - `r` runs `sudo pacman -Syu` (suspends the TUI, then resumes it)
    - `q` quits; exits with code 0 only if the update succeeded
 5. after the update completes successfully, `depgraph.json` is refreshed

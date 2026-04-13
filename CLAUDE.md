@@ -64,6 +64,8 @@ The applet's `spawnCommandLineAsync` success callback (which triggers `updateDep
 
 **Tree structure:** each updateable package is a root node. Expanding a node (`→`) shows all installed packages that `required_by` it (from the full depgraph), sorted alphabetically. Those nodes can be expanded further to show what requires them, and so on. Packages that are already an ancestor in the current path are shown with a `(↺)` suffix and cannot be expanded. Collapsing (`←`) collapses the current node; pressing `←` on a collapsed node moves the cursor to its parent.
 
+**Info popup:** pressing `i` on any node runs `pacman -Qi <package>` and displays the output in a scrollable overlay (`↑`/`↓` to scroll, any other key to close).
+
 ## Data
 
 `depgraph.json` is written by the applet at runtime and is gitignored. `example-depgraph.json` is the committed reference copy showing the schema (keyed by package name, with `name`, `reason`, `version`, `depends_on`, `required_by` fields, and a top-level `last_updated` Unix timestamp).
