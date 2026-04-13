@@ -37,10 +37,14 @@ class PacmanUpdater extends Applet.IconApplet {
 
         /** @type {number|null} */
         this._networkWatcherId = null;
+        /** @type {string} */
+        this._depgraphPath = metadata.path + '/depgraph.json';
 
         this.set_applet_icon_name("face-smile");
 
         this.buildMenu(orientation);
+
+        this.updateDepgraph();
 
         this.startLoop();
     }
@@ -138,14 +142,6 @@ class PacmanUpdater extends Applet.IconApplet {
         log("menu built");
     }
 
-    launchUpdateTerminal() {
-        log("opening terminal...");
-
-        Util.spawnCommandLine('gnome-terminal -- bash -c "sudo pacman -Syu && fc-cache -fv"');
-
-        log("terminal opened");
-    }
-
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //                            LOOP MANAGEMENT                                 //
@@ -180,6 +176,31 @@ class PacmanUpdater extends Applet.IconApplet {
         this._timeout = null;
 
         log("loop stopped");
+    }
+
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                               RUN UPDATE                                   //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
+
+    launchUpdateTerminal() {
+        log("opening terminal...");
+
+        // --wait makes gnome-terminal block until the shell exits, so the
+        // spawnCommandLineAsync callback fires only after the update finishes.
+        Util.spawnCommandLineAsync(
+            'gnome-terminal --wait -- bash -c "sudo pacman -Syu && fc-cache -fv"',
+            () => {
+                log("update terminal exited successfully");
+                this.updateDepgraph();
+            },
+            () => {
+                log("update terminal exited with error");
+            }
+        );
+
+        log("terminal opened");
     }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -317,6 +338,68 @@ class PacmanUpdater extends Applet.IconApplet {
 
     isNetworkWatcherEnabled() {
         return this._networkWatcherId;
+    }
+
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//                               DEPGRAPH                                     //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
+
+    updateDepgraph() {
+        log("updating depgraph...");
+        let proc = new Gio.Subprocess({
+            argv: ['pacman', '-Qi'],
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+        });
+        proc.init(null);
+        proc.communicate_utf8_async(null, null, (proc, res) => {
+            try {
+                let [ok, stdout, stderr] = proc.communicate_utf8_finish(res);
+                if (stderr && stderr.trim()) {
+                    logError(`depgraph: pacman -Qi error: ${stderr}`);
+                    return;
+                }
+                let graph = this._parsePacmanQi(stdout);
+                this._writeDepgraph(graph);
+            } catch (e) {
+                logError(`depgraph update failed: ${e}`);
+            }
+        });
+    }
+
+    _parsePacmanQi(output) {
+        let packages = {};
+        for (let block of output.split('\n\n')) {
+            let pkg = {};
+            for (let line of block.split('\n')) {
+                let match = line.match(/^(\S[^:]*?)\s*:\s*(.*)/);
+                if (!match) continue;
+                let [, key, val] = match;
+                if (key.trim() === 'Name') {
+                    pkg.name = val.trim();
+                } else if (key.trim() === 'Version') {
+                    pkg.version = val.trim();
+                } else if (key.trim() === 'Install Reason') {
+                    pkg.reason = val.includes('Explicitly') ? 'explicit' : 'dependency';
+                } else if (key.trim() === 'Depends On') {
+                    let v = val.trim();
+                    pkg.depends_on = v === 'None' ? [] :
+                        v.split(/\s+/).map(d => d.replace(/[><=].*/,''));
+                }
+            }
+            if (pkg.name) packages[pkg.name] = pkg;
+        }
+        return { last_updated: Math.floor(Date.now() / 1000), packages };
+    }
+
+    _writeDepgraph(graph) {
+        let file = Gio.File.new_for_path(this._depgraphPath);
+        let bytes = new TextEncoder().encode(JSON.stringify(graph, null, 2));
+        file.replace_contents(
+            bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null
+        );
+        log(`depgraph updated: ${Object.keys(graph.packages).length} packages`);
     }
 }
 
