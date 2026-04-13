@@ -10,6 +10,7 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
+    prelude::Alignment,
     style::{Color, Modifier, Style},
     text::Line,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -523,24 +524,31 @@ fn pacman_qi(package: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn main() -> Result<(), io::Error> {
-    let depgraph = load_depgraph();
-    let updates_raw = run_checkupdates();
-
-    let has_depgraph = depgraph.is_some();
-
-    if updates_raw.is_empty() && !has_depgraph {
-        println!("No updates available and no depgraph found.");
-        return Ok(());
-    }
-
-    let initial_mode = if updates_raw.is_empty() { Mode::AllPackages } else { Mode::Updates };
-    let mut state = build_state(updates_raw, depgraph, initial_mode);
-
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+
+    draw_loading(&mut terminal, "Starting pacman-update-viewer", "Waiting for package data...")?;
+    let depgraph = load_depgraph();
+
+    draw_loading(&mut terminal, "Starting pacman-update-viewer", "Checking for available updates...")?;
+    let updates_raw = run_checkupdates();
+
+    let has_depgraph = depgraph.is_some();
+
+    if updates_raw.is_empty() && !has_depgraph {
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+        println!("No updates available and no depgraph found.");
+        return Ok(());
+    }
+
+    draw_loading(&mut terminal, "Starting pacman-update-viewer", "Building dependency view...")?;
+    let initial_mode = if updates_raw.is_empty() { Mode::AllPackages } else { Mode::Updates };
+    let mut state = build_state(updates_raw, depgraph, initial_mode);
 
     let update_succeeded = run_app(&mut terminal, &mut state)?;
 
@@ -549,6 +557,30 @@ fn main() -> Result<(), io::Error> {
     terminal.show_cursor()?;
 
     process::exit(if update_succeeded { 0 } else { 1 });
+}
+
+fn draw_loading(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    title: &str,
+    status: &str,
+) -> Result<(), io::Error> {
+    terminal.draw(|f| {
+        let area = centered_rect(52, 24, f.area());
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(format!("{status}\n\nThis can take a few seconds."))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Yellow))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" {title} "))
+                        .border_style(Style::default().fg(Color::Green)),
+                ),
+            area,
+        );
+    })?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
