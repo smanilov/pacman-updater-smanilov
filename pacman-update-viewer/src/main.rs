@@ -38,10 +38,22 @@ struct Depgraph {
 // App state
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Updates,
+    AllPackages,
+}
+
 struct UpdateInfo {
     name: String,
     old_version: String,
     new_version: String,
+    impact: usize,
+}
+
+struct AllPkgInfo {
+    name: String,
+    version: String,
     impact: usize,
 }
 
@@ -59,6 +71,7 @@ struct VisibleItem {
 
 enum ItemKind {
     Root { old_version: String, new_version: String, impact: usize },
+    AllPkgRoot { version: String, impact: usize },
     Dep { installed_version: Option<String>, impact: usize },
 }
 
@@ -70,11 +83,13 @@ struct InfoPopup {
 
 struct AppState {
     roots: Vec<UpdateInfo>,
+    all_roots: Vec<AllPkgInfo>,
     packages: HashMap<String, Package>,
     /// Pre-computed impact (dag_size) for every package in the depgraph.
     impacts: HashMap<String, usize>,
     expanded: HashSet<String>,
     cursor: usize,
+    mode: Mode,
     update_succeeded: bool,
     info_popup: Option<InfoPopup>,
 }
@@ -82,24 +97,49 @@ struct AppState {
 impl AppState {
     fn visible(&self) -> Vec<VisibleItem> {
         let mut out = vec![];
-        for root in &self.roots {
-            let req_by = self.req_by(&root.name);
-            let is_expanded = self.expanded.contains(&root.name);
-            out.push(VisibleItem {
-                name: root.name.clone(),
-                depth: 0,
-                kind: ItemKind::Root {
-                    old_version: root.old_version.clone(),
-                    new_version: root.new_version.clone(),
-                    impact: root.impact,
-                },
-                has_children: !req_by.is_empty(),
-                is_expanded,
-                is_cycle: false,
-            });
-            if is_expanded {
-                let mut ancestors = HashSet::from([root.name.clone()]);
-                self.collect_dep_children(req_by, 1, &mut ancestors, &mut out);
+        match self.mode {
+            Mode::Updates => {
+                for root in &self.roots {
+                    let req_by = self.req_by(&root.name);
+                    let is_expanded = self.expanded.contains(&root.name);
+                    out.push(VisibleItem {
+                        name: root.name.clone(),
+                        depth: 0,
+                        kind: ItemKind::Root {
+                            old_version: root.old_version.clone(),
+                            new_version: root.new_version.clone(),
+                            impact: root.impact,
+                        },
+                        has_children: !req_by.is_empty(),
+                        is_expanded,
+                        is_cycle: false,
+                    });
+                    if is_expanded {
+                        let mut ancestors = HashSet::from([root.name.clone()]);
+                        self.collect_dep_children(req_by, 1, &mut ancestors, &mut out);
+                    }
+                }
+            }
+            Mode::AllPackages => {
+                for pkg in &self.all_roots {
+                    let req_by = self.req_by(&pkg.name);
+                    let is_expanded = self.expanded.contains(&pkg.name);
+                    out.push(VisibleItem {
+                        name: pkg.name.clone(),
+                        depth: 0,
+                        kind: ItemKind::AllPkgRoot {
+                            version: pkg.version.clone(),
+                            impact: pkg.impact,
+                        },
+                        has_children: !req_by.is_empty(),
+                        is_expanded,
+                        is_cycle: false,
+                    });
+                    if is_expanded {
+                        let mut ancestors = HashSet::from([pkg.name.clone()]);
+                        self.collect_dep_children(req_by, 1, &mut ancestors, &mut out);
+                    }
+                }
             }
         }
         out
@@ -190,6 +230,14 @@ impl AppState {
             }
         }
     }
+
+    fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            Mode::Updates => Mode::AllPackages,
+            Mode::AllPackages => Mode::Updates,
+        };
+        self.cursor = 0;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +299,11 @@ fn load_depgraph() -> Option<Depgraph> {
 // State construction
 // ---------------------------------------------------------------------------
 
-fn build_state(updates_raw: Vec<(String, String, String)>, depgraph: Option<Depgraph>) -> AppState {
+fn build_state(
+    updates_raw: Vec<(String, String, String)>,
+    depgraph: Option<Depgraph>,
+    initial_mode: Mode,
+) -> AppState {
     let packages = depgraph.map(|d| d.packages).unwrap_or_default();
 
     let impacts: HashMap<String, usize> = packages
@@ -266,15 +318,25 @@ fn build_state(updates_raw: Vec<(String, String, String)>, depgraph: Option<Depg
             UpdateInfo { name, old_version, new_version, impact }
         })
         .collect();
-
     roots.sort_by(|a, b| b.impact.cmp(&a.impact));
+
+    let mut all_roots: Vec<AllPkgInfo> = packages
+        .iter()
+        .map(|(name, pkg)| {
+            let impact = *impacts.get(name).unwrap_or(&1);
+            AllPkgInfo { name: name.clone(), version: pkg.version.clone(), impact }
+        })
+        .collect();
+    all_roots.sort_by(|a, b| b.impact.cmp(&a.impact).then(a.name.cmp(&b.name)));
 
     AppState {
         roots,
+        all_roots,
         packages,
         impacts,
         expanded: HashSet::new(),
         cursor: 0,
+        mode: initial_mode,
         update_succeeded: false,
         info_popup: None,
     }
@@ -295,12 +357,15 @@ fn main() -> Result<(), io::Error> {
     let depgraph = load_depgraph();
     let updates_raw = run_checkupdates();
 
-    if updates_raw.is_empty() {
-        println!("No updates available.");
+    let has_depgraph = depgraph.is_some();
+
+    if updates_raw.is_empty() && !has_depgraph {
+        println!("No updates available and no depgraph found.");
         return Ok(());
     }
 
-    let mut state = build_state(updates_raw, depgraph);
+    let initial_mode = if updates_raw.is_empty() { Mode::AllPackages } else { Mode::Updates };
+    let mut state = build_state(updates_raw, depgraph, initial_mode);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -325,13 +390,15 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut AppState,
 ) -> Result<bool, io::Error> {
-    let max_root_name = state.roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
+    let max_update_name = state.roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
     let max_old = state.roots.iter().map(|r| r.old_version.len()).max().unwrap_or(10);
+    let max_all_name = state.all_roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
 
     loop {
         let vis = state.visible();
         let cursor = state.cursor;
         let update_succeeded = state.update_succeeded;
+        let mode = state.mode;
 
         let popup_snapshot = state.info_popup.as_ref().map(|p| {
             (p.package.clone(), p.content.clone(), p.scroll)
@@ -361,8 +428,13 @@ fn run_app(
                             "{indent}{icon} {impact:>4}  {:<name_w$}  {:<old_w$}  ->  {new_version}{cycle_suffix}",
                             item.name,
                             old_version,
-                            name_w = max_root_name,
+                            name_w = max_update_name,
                             old_w = max_old,
+                        ),
+                        ItemKind::AllPkgRoot { version, impact } => format!(
+                            "{indent}{icon} {impact:>4}  {:<name_w$}  {version}{cycle_suffix}",
+                            item.name,
+                            name_w = max_all_name,
                         ),
                         ItemKind::Dep { installed_version, impact } => {
                             let ver = installed_version.as_deref().unwrap_or("?");
@@ -376,11 +448,16 @@ fn run_app(
             let mut list_state = ListState::default();
             list_state.select(Some(cursor));
 
+            let title = match mode {
+                Mode::Updates => " Pacman Updates — impact  package  old → new ",
+                Mode::AllPackages => " All Packages — impact  package  version ",
+            };
+
             let list = List::new(items)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Pacman Updates — impact  package  old → new "),
+                        .title(title),
                 )
                 .highlight_style(
                     Style::default()
@@ -392,14 +469,18 @@ fn run_app(
 
             f.render_stateful_widget(list, list_area, &mut list_state);
 
+            let tab_hint = match mode {
+                Mode::Updates => "a all pkgs",
+                Mode::AllPackages => "a updates",
+            };
             let (footer_text, footer_style) = if update_succeeded {
                 (
-                    "  ↑↓ navigate   ←→ collapse/expand   i info   r run update   q quit (update succeeded)",
+                    format!("  ↑↓ navigate   ←→ collapse/expand   i info   r run update   {tab_hint}   q quit (update succeeded)"),
                     Style::default().fg(Color::Green),
                 )
             } else {
                 (
-                    "  ↑↓ navigate   ←→ collapse/expand   i info   r run update   q quit",
+                    format!("  ↑↓ navigate   ←→ collapse/expand   i info   r run update   {tab_hint}   q quit"),
                     Style::default().fg(Color::DarkGray),
                 )
             };
@@ -443,6 +524,7 @@ fn run_app(
                 } else {
                     match key.code {
                         KeyCode::Char('q') => return Ok(state.update_succeeded),
+                        KeyCode::Char('a') => state.toggle_mode(),
                         KeyCode::Char('i') => {
                             let name = vis[cursor].name.clone();
                             state.info_popup = Some(InfoPopup {
