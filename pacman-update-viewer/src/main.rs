@@ -81,6 +81,11 @@ struct InfoPopup {
     scroll: u16,
 }
 
+struct SearchState {
+    query: String,
+    pre_search_cursor: usize,
+}
+
 struct AppState {
     roots: Vec<UpdateInfo>,
     all_roots: Vec<AllPkgInfo>,
@@ -92,14 +97,20 @@ struct AppState {
     mode: Mode,
     update_succeeded: bool,
     info_popup: Option<InfoPopup>,
+    search: Option<SearchState>,
 }
 
 impl AppState {
     fn visible(&self) -> Vec<VisibleItem> {
+        let query = self.search.as_ref().map(|s| s.query.to_lowercase());
+        let matches = |name: &str| -> bool {
+            query.as_ref().map_or(true, |q| name.to_lowercase().contains(q.as_str()))
+        };
         let mut out = vec![];
         match self.mode {
             Mode::Updates => {
                 for root in &self.roots {
+                    if !matches(&root.name) { continue; }
                     let req_by = self.req_by(&root.name);
                     let is_expanded = self.expanded.contains(&root.name);
                     out.push(VisibleItem {
@@ -122,6 +133,7 @@ impl AppState {
             }
             Mode::AllPackages => {
                 for pkg in &self.all_roots {
+                    if !matches(&pkg.name) { continue; }
                     let req_by = self.req_by(&pkg.name);
                     let is_expanded = self.expanded.contains(&pkg.name);
                     out.push(VisibleItem {
@@ -339,6 +351,7 @@ fn build_state(
         mode: initial_mode,
         update_succeeded: false,
         info_popup: None,
+        search: None,
     }
 }
 
@@ -399,16 +412,28 @@ fn run_app(
         let cursor = state.cursor;
         let update_succeeded = state.update_succeeded;
         let mode = state.mode;
+        let search_query: Option<String> = state.search.as_ref().map(|s| s.query.clone());
 
         let popup_snapshot = state.info_popup.as_ref().map(|p| {
             (p.package.clone(), p.content.clone(), p.scroll)
         });
 
         terminal.draw(|f| {
-            let [list_area, footer_area] = Layout::default()
+            let searching = search_query.is_some();
+            let areas = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1)])
-                .areas(f.area());
+                .constraints(if searching {
+                    vec![Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)]
+                } else {
+                    vec![Constraint::Min(1), Constraint::Length(1)]
+                })
+                .split(f.area());
+            let list_area = areas[0];
+            let (search_area, footer_area) = if searching {
+                (Some(areas[1]), areas[2])
+            } else {
+                (None, areas[1])
+            };
 
             let items: Vec<ListItem> = vis
                 .iter()
@@ -469,20 +494,30 @@ fn run_app(
 
             f.render_stateful_widget(list, list_area, &mut list_state);
 
-            let tab_hint = match mode {
-                Mode::Updates => "a all pkgs",
-                Mode::AllPackages => "a updates",
-            };
-            let (footer_text, footer_style) = if update_succeeded {
+            if let (Some(area), Some(query)) = (search_area, &search_query) {
+                f.render_widget(
+                    Paragraph::new(format!("/ {query}█"))
+                        .style(Style::default().fg(Color::Yellow)),
+                    area,
+                );
+            }
+
+            let (footer_text, footer_style) = if search_query.is_some() {
                 (
-                    format!("  ↑↓ navigate   ←→ collapse/expand   i info   r run update   {tab_hint}   q quit (update succeeded)"),
-                    Style::default().fg(Color::Green),
+                    "  ↑↓ navigate   enter confirm   esc cancel".to_string(),
+                    Style::default().fg(Color::Yellow),
                 )
             } else {
-                (
-                    format!("  ↑↓ navigate   ←→ collapse/expand   i info   r run update   {tab_hint}   q quit"),
-                    Style::default().fg(Color::DarkGray),
-                )
+                let a_hint = match mode {
+                    Mode::Updates => "a all pkgs",
+                    Mode::AllPackages => "a updates",
+                };
+                let base = format!("  ↑↓ navigate   ←→ collapse/expand   i info   / search   r run update   {a_hint}   q quit");
+                if update_succeeded {
+                    (format!("{base} (update succeeded)"), Style::default().fg(Color::Green))
+                } else {
+                    (base, Style::default().fg(Color::DarkGray))
+                }
             };
             f.render_widget(Paragraph::new(footer_text).style(footer_style), footer_area);
 
@@ -521,10 +556,57 @@ fn run_app(
                         }
                         _ => state.info_popup = None,
                     }
+                } else if state.search.is_some() {
+                    match key.code {
+                        KeyCode::Esc => {
+                            let pre = state.search.as_ref().map(|s| s.pre_search_cursor).unwrap_or(0);
+                            state.search = None;
+                            state.cursor = pre;
+                            state.clamp_cursor();
+                        }
+                        KeyCode::Enter => {
+                            let selected_name = vis.get(state.cursor).map(|i| i.name.clone());
+                            state.search = None;
+                            if let Some(name) = selected_name {
+                                let full_vis = state.visible();
+                                if let Some(pos) = full_vis.iter().position(|i| i.depth == 0 && i.name == name) {
+                                    state.cursor = pos;
+                                } else {
+                                    state.clamp_cursor();
+                                }
+                            } else {
+                                state.clamp_cursor();
+                            }
+                        }
+                        KeyCode::Up => state.move_up(),
+                        KeyCode::Down => state.move_down(),
+                        KeyCode::Backspace => {
+                            if let Some(s) = &mut state.search {
+                                s.query.pop();
+                            }
+                            state.cursor = 0;
+                            state.clamp_cursor();
+                        }
+                        KeyCode::Char(c) => {
+                            if let Some(s) = &mut state.search {
+                                s.query.push(c);
+                            }
+                            state.cursor = 0;
+                            state.clamp_cursor();
+                        }
+                        _ => {}
+                    }
                 } else {
                     match key.code {
                         KeyCode::Char('q') => return Ok(state.update_succeeded),
                         KeyCode::Char('a') => state.toggle_mode(),
+                        KeyCode::Char('/') => {
+                            state.search = Some(SearchState {
+                                query: String::new(),
+                                pre_search_cursor: state.cursor,
+                            });
+                            state.cursor = 0;
+                        }
                         KeyCode::Char('i') => {
                             let name = vis[cursor].name.clone();
                             state.info_popup = Some(InfoPopup {
