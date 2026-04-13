@@ -5,16 +5,16 @@ use std::process::{self, Command};
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::Alignment,
     style::{Color, Modifier, Style},
     text::Line,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
-    Terminal,
 };
 use serde::Deserialize;
 
@@ -78,9 +78,19 @@ struct VisibleItem {
 }
 
 enum ItemKind {
-    Root { old_version: String, new_version: String, impact: usize },
-    AllPkgRoot { version: String, impact: usize },
-    Dep { installed_version: Option<String>, impact: usize },
+    Root {
+        old_version: String,
+        new_version: String,
+        impact: usize,
+    },
+    AllPkgRoot {
+        version: String,
+        impact: usize,
+    },
+    Dep {
+        installed_version: Option<String>,
+        impact: usize,
+    },
 }
 
 struct InfoPopup {
@@ -121,13 +131,17 @@ impl AppState {
     fn visible(&self) -> Vec<VisibleItem> {
         let query = self.search.as_ref().map(|s| s.query.to_lowercase());
         let matches = |name: &str| -> bool {
-            query.as_ref().map_or(true, |q| name.to_lowercase().contains(q.as_str()))
+            query
+                .as_ref()
+                .map_or(true, |q| name.to_lowercase().contains(q.as_str()))
         };
         let mut out = vec![];
         match self.mode {
             Mode::Updates => {
                 for root in &self.roots {
-                    if !matches(&root.name) { continue; }
+                    if !matches(&root.name) {
+                        continue;
+                    }
                     let children = self.children_of(&root.name);
                     let path = vec![root.name.clone()];
                     let key = Self::path_key(&path);
@@ -154,7 +168,9 @@ impl AppState {
             }
             Mode::AllPackages => {
                 for pkg in &self.all_roots {
-                    if !matches(&pkg.name) { continue; }
+                    if !matches(&pkg.name) {
+                        continue;
+                    }
                     let children = self.children_of(&pkg.name);
                     let path = vec![pkg.name.clone()];
                     let key = Self::path_key(&path);
@@ -183,19 +199,40 @@ impl AppState {
     }
 
     fn req_by(&self, name: &str) -> Vec<String> {
-        self.packages.get(name).map(|p| { let mut v = p.required_by.clone(); v.sort(); v }).unwrap_or_default()
+        self.packages
+            .get(name)
+            .map(|p| {
+                let mut v = p.required_by.clone();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
     }
 
     fn deps_of(&self, name: &str) -> Vec<String> {
-        self.packages.get(name).map(|p| { let mut v = p.depends_on.clone(); v.sort(); v }).unwrap_or_default()
+        self.packages
+            .get(name)
+            .map(|p| {
+                let mut v = p.depends_on.clone();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
     }
 
     fn groups_of(&self, name: &str) -> Vec<String> {
-        self.packages.get(name).map(|p| p.groups.clone()).unwrap_or_default()
+        self.packages
+            .get(name)
+            .map(|p| p.groups.clone())
+            .unwrap_or_default()
     }
 
     fn children_of(&self, name: &str) -> Vec<String> {
-        if self.transposed { self.deps_of(name) } else { self.req_by(name) }
+        if self.transposed {
+            self.deps_of(name)
+        } else {
+            self.req_by(name)
+        }
     }
 
     fn impact_of(&self, name: &str) -> usize {
@@ -219,7 +256,11 @@ impl AppState {
             path.push(name.clone());
             let key = Self::path_key(&path);
             let is_cycle = ancestors.contains(&name);
-            let children = if is_cycle { vec![] } else { self.children_of(&name) };
+            let children = if is_cycle {
+                vec![]
+            } else {
+                self.children_of(&name)
+            };
             let has_children = !children.is_empty();
             let is_expanded = !is_cycle && self.expanded.contains(&key);
             let installed_version = self.packages.get(&name).map(|p| p.version.clone());
@@ -229,7 +270,10 @@ impl AppState {
                 key,
                 groups: self.groups_of(&name),
                 depth,
-                kind: ItemKind::Dep { installed_version, impact },
+                kind: ItemKind::Dep {
+                    installed_version,
+                    impact,
+                },
                 has_children,
                 is_expanded,
                 is_cycle,
@@ -303,20 +347,26 @@ impl AppState {
             self.expanded.remove(&key);
             self.clamp_cursor();
         } else if depth > 0 {
-            if let Some(pos) = vis[..self.cursor].iter().rposition(|i| i.depth == depth - 1) {
+            if let Some(pos) = vis[..self.cursor]
+                .iter()
+                .rposition(|i| i.depth == depth - 1)
+            {
                 self.cursor = pos;
             }
         }
     }
 
     fn reload_packages(&mut self, packages: HashMap<String, Package>) {
-        self.impacts = packages.keys()
+        self.impacts = packages
+            .keys()
             .map(|name| (name.clone(), dag_size(name, &packages)))
             .collect();
-        self.dep_impacts = packages.keys()
+        self.dep_impacts = packages
+            .keys()
             .map(|name| (name.clone(), dep_dag_size(name, &packages)))
             .collect();
-        self.all_roots = packages.iter()
+        self.all_roots = packages
+            .iter()
             .map(|(name, pkg)| AllPkgInfo {
                 name: name.clone(),
                 version: pkg.version.clone(),
@@ -327,9 +377,8 @@ impl AppState {
         for root in &mut self.roots {
             root.impact = *self.impacts.get(&root.name).unwrap_or(&1);
         }
-        self.expanded.retain(|key| {
-            key.split('\u{1f}').all(|name| packages.contains_key(name))
-        });
+        self.expanded
+            .retain(|key| key.split('\u{1f}').all(|name| packages.contains_key(name)));
         self.packages = packages;
         self.resort();
         self.clamp_cursor();
@@ -344,7 +393,10 @@ impl AppState {
     }
 
     fn toggle_transposed(&mut self) {
-        let pinned = self.visible().get(self.cursor).map(|item| item.name.clone());
+        let pinned = self
+            .visible()
+            .get(self.cursor)
+            .map(|item| item.name.clone());
         self.transposed = !self.transposed;
         self.resort();
         self.expanded.clear();
@@ -365,14 +417,23 @@ impl AppState {
                 *self.impacts.get(name).unwrap_or(&1)
             }
         };
-        self.all_roots.sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)).then(a.name.cmp(&b.name)));
-        self.roots.sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)));
+        self.all_roots.sort_by(|a, b| {
+            impact_of(&b.name)
+                .cmp(&impact_of(&a.name))
+                .then(a.name.cmp(&b.name))
+        });
+        self.roots
+            .sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)));
     }
 
     fn root_names(&self) -> Vec<String> {
         match self.mode {
             Mode::Updates => self.roots.iter().map(|root| root.name.clone()).collect(),
-            Mode::AllPackages => self.all_roots.iter().map(|root| root.name.clone()).collect(),
+            Mode::AllPackages => self
+                .all_roots
+                .iter()
+                .map(|root| root.name.clone())
+                .collect(),
         }
     }
 
@@ -433,9 +494,13 @@ fn dag_size(name: &str, packages: &HashMap<String, Package>) -> usize {
 }
 
 fn visit_dag(name: &str, packages: &HashMap<String, Package>, visited: &mut HashSet<String>) {
-    if !visited.insert(name.to_string()) { return; }
+    if !visited.insert(name.to_string()) {
+        return;
+    }
     if let Some(pkg) = packages.get(name) {
-        for parent in &pkg.required_by { visit_dag(parent, packages, visited); }
+        for parent in &pkg.required_by {
+            visit_dag(parent, packages, visited);
+        }
     }
 }
 
@@ -446,9 +511,13 @@ fn dep_dag_size(name: &str, packages: &HashMap<String, Package>) -> usize {
 }
 
 fn visit_dep_dag(name: &str, packages: &HashMap<String, Package>, visited: &mut HashSet<String>) {
-    if !visited.insert(name.to_string()) { return; }
+    if !visited.insert(name.to_string()) {
+        return;
+    }
     if let Some(pkg) = packages.get(name) {
-        for dep in &pkg.depends_on { visit_dep_dag(dep, packages, visited); }
+        for dep in &pkg.depends_on {
+            visit_dep_dag(dep, packages, visited);
+        }
     }
 }
 
@@ -475,7 +544,9 @@ fn run_checkupdates() -> Vec<(String, String, String)> {
 
 fn depgraph_path() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    Some(format!("{home}/.local/share/cinnamon/applets/pacman-updater@smanilov/depgraph.json"))
+    Some(format!(
+        "{home}/.local/share/cinnamon/applets/pacman-updater@smanilov/depgraph.json"
+    ))
 }
 
 fn load_depgraph() -> Option<Depgraph> {
@@ -492,7 +563,10 @@ fn load_depgraph() -> Option<Depgraph> {
 fn rebuild_depgraph() -> HashMap<String, Package> {
     let output = match Command::new("pacman").args(["-Qi"]).output() {
         Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Err(e) => { eprintln!("Failed to run pacman -Qi: {e}"); return HashMap::new(); }
+        Err(e) => {
+            eprintln!("Failed to run pacman -Qi: {e}");
+            return HashMap::new();
+        }
     };
 
     let mut result: HashMap<String, Package> = HashMap::new();
@@ -503,13 +577,17 @@ fn rebuild_depgraph() -> HashMap<String, Package> {
         if line.is_empty() {
             if let Some(name) = fields.get("Name").cloned() {
                 let version = fields.get("Version").cloned().unwrap_or_default();
-                let reason = if fields.get("Install Reason").map_or(false, |r| r.contains("Explicitly")) {
+                let reason = if fields
+                    .get("Install Reason")
+                    .map_or(false, |r| r.contains("Explicitly"))
+                {
                     "explicit"
                 } else {
                     "dependency"
                 };
                 let parse_list = |key: &str| -> Vec<String> {
-                    fields.get(key)
+                    fields
+                        .get(key)
                         .filter(|v| *v != "None")
                         .map(|v| v.split_whitespace().map(str::to_string).collect())
                         .unwrap_or_default()
@@ -518,21 +596,34 @@ fn rebuild_depgraph() -> HashMap<String, Package> {
                 let depends_on: Vec<String> = parse_list("Depends On")
                     .into_iter()
                     .map(|s| {
-                        let end = s.find(|c| c == '>' || c == '<' || c == '=').unwrap_or(s.len());
+                        let end = s
+                            .find(|c| c == '>' || c == '<' || c == '=')
+                            .unwrap_or(s.len());
                         s[..end].to_string()
                     })
                     .collect();
                 let groups = parse_list("Groups");
 
-                json_pkgs.insert(name.clone(), serde_json::json!({
-                    "name": name,
-                    "version": version,
-                    "reason": reason,
-                    "depends_on": depends_on,
-                    "required_by": required_by,
-                    "groups": groups,
-                }));
-                result.insert(name, Package { version, required_by, depends_on, groups });
+                json_pkgs.insert(
+                    name.clone(),
+                    serde_json::json!({
+                        "name": name,
+                        "version": version,
+                        "reason": reason,
+                        "depends_on": depends_on,
+                        "required_by": required_by,
+                        "groups": groups,
+                    }),
+                );
+                result.insert(
+                    name,
+                    Package {
+                        version,
+                        required_by,
+                        depends_on,
+                        groups,
+                    },
+                );
             }
             fields.clear();
         } else if !line.starts_with(' ') {
@@ -575,7 +666,12 @@ fn build_state(
         .into_iter()
         .map(|(name, old_version, new_version)| {
             let impact = *impacts.get(&name).unwrap_or(&1);
-            UpdateInfo { name, old_version, new_version, impact }
+            UpdateInfo {
+                name,
+                old_version,
+                new_version,
+                impact,
+            }
         })
         .collect();
     roots.sort_by(|a, b| b.impact.cmp(&a.impact));
@@ -584,7 +680,11 @@ fn build_state(
         .iter()
         .map(|(name, pkg)| {
             let impact = *impacts.get(name).unwrap_or(&1);
-            AllPkgInfo { name: name.clone(), version: pkg.version.clone(), impact }
+            AllPkgInfo {
+                name: name.clone(),
+                version: pkg.version.clone(),
+                impact,
+            }
         })
         .collect();
     all_roots.sort_by(|a, b| b.impact.cmp(&a.impact).then(a.name.cmp(&b.name)));
@@ -630,10 +730,18 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    draw_loading(&mut terminal, "Starting pacman-update-viewer", "Waiting for package data...")?;
+    draw_loading(
+        &mut terminal,
+        "Starting pacman-update-viewer",
+        "Waiting for package data...",
+    )?;
     let depgraph = load_depgraph();
 
-    draw_loading(&mut terminal, "Starting pacman-update-viewer", "Checking for available updates...")?;
+    draw_loading(
+        &mut terminal,
+        "Starting pacman-update-viewer",
+        "Checking for available updates...",
+    )?;
     let updates_raw = run_checkupdates();
 
     let has_depgraph = depgraph.is_some();
@@ -646,8 +754,16 @@ fn main() -> Result<(), io::Error> {
         return Ok(());
     }
 
-    draw_loading(&mut terminal, "Starting pacman-update-viewer", "Building dependency view...")?;
-    let initial_mode = if updates_raw.is_empty() { Mode::AllPackages } else { Mode::Updates };
+    draw_loading(
+        &mut terminal,
+        "Starting pacman-update-viewer",
+        "Building dependency view...",
+    )?;
+    let initial_mode = if updates_raw.is_empty() {
+        Mode::AllPackages
+    } else {
+        Mode::Updates
+    };
     let mut state = build_state(updates_raw, depgraph, initial_mode);
 
     let update_succeeded = run_app(&mut terminal, &mut state)?;
@@ -692,8 +808,18 @@ fn run_app(
     state: &mut AppState,
 ) -> Result<bool, io::Error> {
     let max_update_name = state.roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
-    let max_old = state.roots.iter().map(|r| r.old_version.len()).max().unwrap_or(10);
-    let max_all_name = state.all_roots.iter().map(|r| r.name.len()).max().unwrap_or(10);
+    let max_old = state
+        .roots
+        .iter()
+        .map(|r| r.old_version.len())
+        .max()
+        .unwrap_or(10);
+    let max_all_name = state
+        .all_roots
+        .iter()
+        .map(|r| r.name.len())
+        .max()
+        .unwrap_or(10);
     let mut list_state = ListState::default();
 
     loop {
@@ -707,9 +833,10 @@ fn run_app(
         let show_groups = state.show_groups;
         let transposed = state.transposed;
 
-        let popup_snapshot = state.info_popup.as_ref().map(|p| {
-            (p.package.clone(), p.content.clone(), p.scroll)
-        });
+        let popup_snapshot = state
+            .info_popup
+            .as_ref()
+            .map(|p| (p.package.clone(), p.content.clone(), p.scroll));
 
         list_state.select(Some(cursor));
         terminal.draw(|f| {
@@ -891,7 +1018,11 @@ fn run_app(
                 } else if state.search.is_some() {
                     match key.code {
                         KeyCode::Esc => {
-                            let pre = state.search.as_ref().map(|s| s.pre_search_cursor).unwrap_or(0);
+                            let pre = state
+                                .search
+                                .as_ref()
+                                .map(|s| s.pre_search_cursor)
+                                .unwrap_or(0);
                             state.search = None;
                             state.cursor = pre;
                             state.clamp_cursor();
@@ -901,7 +1032,9 @@ fn run_app(
                             state.search = None;
                             if let Some(name) = selected_name {
                                 let full_vis = state.visible();
-                                if let Some(pos) = full_vis.iter().position(|i| i.depth == 0 && i.name == name) {
+                                if let Some(pos) =
+                                    full_vis.iter().position(|i| i.depth == 0 && i.name == name)
+                                {
                                     state.cursor = pos;
                                 } else {
                                     state.clamp_cursor();
@@ -959,8 +1092,16 @@ fn run_app(
                             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                             terminal.show_cursor()?;
 
-                            if Command::new("sudo").args(["pacman", "-Syu"]).status().is_ok_and(|s| s.success()) {
-                                if Command::new("fc-cache").args(["-fv"]).status().is_ok_and(|s| s.success()) {
+                            if Command::new("sudo")
+                                .args(["pacman", "-Syu"])
+                                .status()
+                                .is_ok_and(|s| s.success())
+                            {
+                                if Command::new("fc-cache")
+                                    .args(["-fv"])
+                                    .status()
+                                    .is_ok_and(|s| s.success())
+                                {
                                     state.update_succeeded = true;
                                 }
                             }
@@ -975,7 +1116,10 @@ fn run_app(
                             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                             terminal.show_cursor()?;
 
-                            Command::new("sudo").args(["pacman", "-R", &name]).status().ok();
+                            Command::new("sudo")
+                                .args(["pacman", "-R", &name])
+                                .status()
+                                .ok();
                             let packages = rebuild_depgraph();
 
                             enable_raw_mode()?;
