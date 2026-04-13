@@ -107,9 +107,10 @@ struct SearchState {
 struct AppState {
     updates_roots: Vec<UpdateInfo>,
     all_roots: Vec<AllPkgInfo>,
+    all_leaves: Vec<AllPkgInfo>,
     packages: HashMap<String, Package>,
-    /// Pre-computed reverse-impact (dag_size via required_by) for every package.
-    impacts: HashMap<String, usize>,
+    /// Pre-computed reverse-impact (used_by_dag_size via required_by) for every package.
+    used_by_impacts: HashMap<String, usize>,
     /// Pre-computed forward-impact (closure size via depends_on) for every package.
     dep_impacts: HashMap<String, usize>,
     expanded: HashSet<String>,
@@ -167,7 +168,7 @@ impl AppState {
                 }
             }
             Mode::AllPackages => {
-                for pkg in &self.all_roots {
+                for pkg in self.all_top_level() {
                     if !matches(&pkg.name) {
                         continue;
                     }
@@ -235,11 +236,19 @@ impl AppState {
         }
     }
 
+    fn all_top_level(&self) -> &Vec<AllPkgInfo> {
+        if self.transposed {
+            &self.all_roots
+        } else {
+            &self.all_leaves
+        }
+    }
+
     fn impact_of(&self, name: &str) -> usize {
         if self.transposed {
             *self.dep_impacts.get(name).unwrap_or(&1)
         } else {
-            *self.impacts.get(name).unwrap_or(&1)
+            *self.used_by_impacts.get(name).unwrap_or(&1)
         }
     }
 
@@ -357,9 +366,9 @@ impl AppState {
     }
 
     fn reload_packages(&mut self, packages: HashMap<String, Package>) {
-        self.impacts = packages
+        self.used_by_impacts = packages
             .keys()
-            .map(|name| (name.clone(), dag_size(name, &packages)))
+            .map(|name| (name.clone(), used_by_dag_size(name, &packages)))
             .collect();
         self.dep_impacts = packages
             .keys()
@@ -367,16 +376,26 @@ impl AppState {
             .collect();
         self.all_roots = packages
             .iter()
+            .filter(|(_name, pkg)| pkg.required_by.is_empty())
             .map(|(name, pkg)| AllPkgInfo {
                 name: name.clone(),
                 version: pkg.version.clone(),
-                impact: *self.impacts.get(name).unwrap_or(&1),
+                impact: *self.used_by_impacts.get(name).unwrap_or(&1),
+            })
+            .collect();
+        self.all_leaves = packages
+            .iter()
+            .filter(|(_name, pkg)| pkg.depends_on.is_empty())
+            .map(|(name, pkg)| AllPkgInfo {
+                name: name.clone(),
+                version: pkg.version.clone(),
+                impact: *self.dep_impacts.get(name).unwrap_or(&1),
             })
             .collect();
         self.updates_roots
             .retain(|r| packages.contains_key(&r.name));
         for root in &mut self.updates_roots {
-            root.impact = *self.impacts.get(&root.name).unwrap_or(&1);
+            root.impact = *self.used_by_impacts.get(&root.name).unwrap_or(&1);
         }
         self.expanded
             .retain(|key| key.split('\u{1f}').all(|name| packages.contains_key(name)));
@@ -415,10 +434,15 @@ impl AppState {
             if self.transposed {
                 *self.dep_impacts.get(name).unwrap_or(&1)
             } else {
-                *self.impacts.get(name).unwrap_or(&1)
+                *self.used_by_impacts.get(name).unwrap_or(&1)
             }
         };
         self.all_roots.sort_by(|a, b| {
+            impact_of(&b.name)
+                .cmp(&impact_of(&a.name))
+                .then(a.name.cmp(&b.name))
+        });
+        self.all_leaves.sort_by(|a, b| {
             impact_of(&b.name)
                 .cmp(&impact_of(&a.name))
                 .then(a.name.cmp(&b.name))
@@ -435,7 +459,7 @@ impl AppState {
                 .map(|root| root.name.clone())
                 .collect(),
             Mode::AllPackages => self
-                .all_roots
+                .all_top_level()
                 .iter()
                 .map(|root| root.name.clone())
                 .collect(),
@@ -492,19 +516,23 @@ impl AppState {
 // Impact computation
 // ---------------------------------------------------------------------------
 
-fn dag_size(name: &str, packages: &HashMap<String, Package>) -> usize {
+fn used_by_dag_size(name: &str, packages: &HashMap<String, Package>) -> usize {
     let mut visited = HashSet::new();
-    visit_dag(name, packages, &mut visited);
+    visit_used_by_dag(name, packages, &mut visited);
     visited.len()
 }
 
-fn visit_dag(name: &str, packages: &HashMap<String, Package>, visited: &mut HashSet<String>) {
+fn visit_used_by_dag(
+    name: &str,
+    packages: &HashMap<String, Package>,
+    visited: &mut HashSet<String>,
+) {
     if !visited.insert(name.to_string()) {
         return;
     }
     if let Some(pkg) = packages.get(name) {
         for parent in &pkg.required_by {
-            visit_dag(parent, packages, visited);
+            visit_used_by_dag(parent, packages, visited);
         }
     }
 }
@@ -662,15 +690,20 @@ fn build_state(
 ) -> AppState {
     let packages = depgraph.map(|d| d.packages).unwrap_or_default();
 
-    let impacts: HashMap<String, usize> = packages
+    let used_by_impacts: HashMap<String, usize> = packages
         .keys()
-        .map(|name| (name.clone(), dag_size(name, &packages)))
+        .map(|name| (name.clone(), used_by_dag_size(name, &packages)))
+        .collect();
+
+    let dep_impacts: HashMap<String, usize> = packages
+        .keys()
+        .map(|name| (name.clone(), dep_dag_size(name, &packages)))
         .collect();
 
     let mut updates_roots: Vec<UpdateInfo> = updates_raw
         .into_iter()
         .map(|(name, old_version, new_version)| {
-            let impact = *impacts.get(&name).unwrap_or(&1);
+            let impact = *used_by_impacts.get(&name).unwrap_or(&1);
             UpdateInfo {
                 name,
                 old_version,
@@ -683,8 +716,9 @@ fn build_state(
 
     let mut all_roots: Vec<AllPkgInfo> = packages
         .iter()
+        .filter(|(_name, pkg)| pkg.required_by.is_empty())
         .map(|(name, pkg)| {
-            let impact = *impacts.get(name).unwrap_or(&1);
+            let impact = *used_by_impacts.get(name).unwrap_or(&1);
             AllPkgInfo {
                 name: name.clone(),
                 version: pkg.version.clone(),
@@ -694,16 +728,26 @@ fn build_state(
         .collect();
     all_roots.sort_by(|a, b| b.impact.cmp(&a.impact).then(a.name.cmp(&b.name)));
 
-    let dep_impacts: HashMap<String, usize> = packages
-        .keys()
-        .map(|name| (name.clone(), dep_dag_size(name, &packages)))
+    let mut all_leaves: Vec<AllPkgInfo> = packages
+        .iter()
+        .filter(|(_name, pkg)| pkg.depends_on.is_empty())
+        .map(|(name, pkg)| {
+            let impact = *used_by_impacts.get(name).unwrap_or(&1);
+            AllPkgInfo {
+                name: name.clone(),
+                version: pkg.version.clone(),
+                impact,
+            }
+        })
         .collect();
+    all_leaves.sort_by(|a, b| b.impact.cmp(&a.impact).then(a.name.cmp(&b.name)));
 
     AppState {
         updates_roots,
         all_roots,
+        all_leaves,
         packages,
-        impacts,
+        used_by_impacts,
         dep_impacts,
         expanded: HashSet::new(),
         cursor: 0,
