@@ -1003,6 +1003,7 @@ fn run_app(
                         "    i            Package info (pacman -Qi)\n",
                         "    /            Search packages\n",
                         "    r            Run update (sudo pacman -Syu)\n",
+                        "    u            Install package under cursor (sudo pacman -S)\n",
                         "    d            Remove package under cursor (sudo pacman -R)\n",
                         "    a            Toggle updates / all packages\n",
                         "    t            Transpose tree (used-by ↔ depends-on)\n",
@@ -1174,6 +1175,26 @@ fn run_app(
                                 .args(["pacman", "-R", &name])
                                 .status()
                                 .ok();
+                            let packages = rebuild_depgraph();
+
+                            enable_raw_mode()?;
+                            execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                            terminal.clear()?;
+                            state.reload_packages(packages);
+                        }
+                        KeyCode::Char('u') => {
+                            let name = vis[cursor].name.clone();
+                            disable_raw_mode()?;
+                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                            terminal.show_cursor()?;
+
+                            if Command::new("sudo")
+                                .args(["pacman", "-S", &name])
+                                .status()
+                                .is_ok_and(|s| s.success())
+                            {
+                                state.update_succeeded = true;
+                            }
                             let packages = rebuild_depgraph();
 
                             enable_raw_mode()?;
