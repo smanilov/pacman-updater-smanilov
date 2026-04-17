@@ -58,15 +58,17 @@ The entire applet is a single class `PacmanUpdater` in `applet.js` that extends 
 A Rust TUI app (`src/main.rs`) that replaces the old raw `sudo pacman -Syu` terminal action.
 
 **Flow:**
-1. Runs `checkupdates` to get the pending update list
-2. Reads `depgraph.json` to compute both reverse impact (`required_by`) and forward impact (`depends_on`)
-3. Starts in updates mode, or all-packages mode if there are no pending updates but a depgraph is available
-4. Sorts root rows by the active impact direction and renders them as a collapsible tree
-5. `r` suspends the TUI, runs `sudo pacman -Syu` in the foreground, then resumes the TUI; sets an internal `update_succeeded` flag on exit code 0
-6. `d` suspends the TUI, runs `sudo pacman -R <package>`, rebuilds `depgraph.json`, reloads package state, and re-sorts
-7. `q` exits with code 0 if `update_succeeded`, else code 1
+1. Shows a loading screen while fetching package data and checking for updates
+2. Runs `checkupdates` to get the pending update list
+3. Reads `depgraph.json` to compute both reverse impact (`required_by`) and forward impact (`depends_on`)
+4. Starts in updates mode, or all-packages mode if there are no pending updates but a depgraph is available
+5. Sorts root rows by the active impact direction and renders them as a collapsible tree
+6. `r` suspends the TUI, runs `sudo pacman -Syu` in the foreground, then resumes the TUI; also runs `fc-cache -fv` on success; sets an internal `update_succeeded` flag on success
+7. `u` suspends the TUI, runs `sudo pacman -S <package>`, rebuilds `depgraph.json`, reloads package state, re-sorts; sets `update_succeeded` on success
+8. `d` suspends the TUI, runs `sudo pacman -R <package>`, rebuilds `depgraph.json`, reloads package state, and re-sorts
+9. `q` exits with code 0 if `update_succeeded`, else code 1
 
-The applet's `spawnCommandLineAsync` success callback (which triggers `updateDepgraph()`) fires only when the viewer exits with code 0 — i.e., only after a successful update.
+The applet's `spawnCommandLineAsync` success callback (which triggers `updateDepgraph()`) fires only when the viewer exits with code 0 — i.e., only after a successful update or install.
 
 **Modes and controls:**
 - `a` toggles updates vs all-packages mode
@@ -77,10 +79,12 @@ The applet's `spawnCommandLineAsync` success callback (which triggers `updateDep
 
 **Tree structure:** each updateable package or installed package root is shown as a top-level node. Expanding a node (`→`) shows either the packages that `required_by` it or the packages it `depends_on`, depending on the current transpose state. Child rows are sorted alphabetically. Packages that are already an ancestor in the current path are shown with a `(↺)` suffix and cannot be expanded. Collapsing (`←`) collapses the current node; pressing `←` on a collapsed node moves the cursor to its parent.
 
+**All-packages mode top-level:** `all_top_level()` returns different root sets depending on the transpose state. In used-by mode (non-transposed), it returns `all_leaves` — packages with no `depends_on` (nothing they need), which serve as tree roots when expanding upward via `required_by`. In deps mode (transposed), it returns `all_roots` — packages with no `required_by` (nothing depends on them), which serve as tree roots when expanding downward via `depends_on`.
+
 **Info popup:** pressing `i` on any node runs `pacman -Qi <package>` and displays the output in a scrollable overlay (`↑`/`↓` to scroll, any other key to close).
 
 **Viewer rebuild path:** the Rust binary currently resolves `depgraph.json` via `$HOME/.local/share/cinnamon/applets/pacman-updater@smanilov/depgraph.json`, not via the applet metadata path.
 
 ## Data
 
-`depgraph.json` is written at runtime and is gitignored. It is produced by the applet on startup and after a successful update, and by the viewer after package deletion. `example-depgraph.json` is the committed reference copy showing the schema (keyed by package name, with `name`, `version`, `reason`, `depends_on`, `required_by`, `groups` fields, and a top-level `last_updated` Unix timestamp).
+`depgraph.json` is written at runtime and is gitignored. It is produced by the applet on startup and after a successful update, and by the viewer after package installation or deletion. `example-depgraph.json` is the committed reference copy showing the schema (keyed by package name, with `name`, `version`, `reason`, `depends_on`, `required_by`, `groups` fields, and a top-level `last_updated` Unix timestamp).

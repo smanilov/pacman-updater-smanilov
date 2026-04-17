@@ -16,7 +16,8 @@
    opens a terminal running `pacman-update-viewer` — a TUI that lists pending
    updates sorted by impact factor as a collapsible tree
 4. inside the viewer:
-   - `↑`/`↓` navigate the list
+   - `↑`/`↓` navigate the list; `PgUp`/`PgDn` move a page; `Home`/`End` jump
+     to the first/last item
    - `→` expands a node to show all installed packages that depend on it
    - `←` collapses an expanded node, or moves to the parent if already collapsed
    - `i` shows `pacman -Qi` output for the current item in a scrollable popup
@@ -26,16 +27,19 @@
    - `t` transposes the tree between `required_by` (`used-by`) and
      `depends_on` (`deps`) traversal
    - `g` toggles package group labels
+   - `r` runs `sudo pacman -Syu` (suspends the TUI, then resumes it); also runs
+     `fc-cache -fv` on success
+   - `u` installs the currently selected package with `sudo pacman -S`, then
+     rebuilds `depgraph.json`
    - `d` removes the currently selected package with `sudo pacman -R`, then
      rebuilds `depgraph.json`
    - `h` or `?` opens the help popup
-   - `r` runs `sudo pacman -Syu` (suspends the TUI, then resumes it)
-   - `q` quits; exits with code 0 only if the update succeeded
+   - `q` quits; exits with code 0 only if an update or install succeeded
 5. if there are no pending updates but `depgraph.json` exists, the viewer opens
    directly in all-packages mode instead of exiting
 6. after the update completes successfully, `depgraph.json` is refreshed
    automatically; it is also refreshed on applet startup and rebuilt after
-   package deletion from inside the viewer
+   package installation or deletion from inside the viewer
 
 # Data
 
