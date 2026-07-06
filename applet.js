@@ -36,6 +36,8 @@ class PacmanUpdater extends Applet.IconApplet {
         this._checkingForUpdates = false;
         // bool
         this._hasNetwork = false;
+        // string|null
+        this._errorMessage = null;
 
         /** @type {number|null} */
         this._networkWatcherId = null;
@@ -96,6 +98,11 @@ class PacmanUpdater extends Applet.IconApplet {
         this._updateTooltip();
     }
 
+    setErrorMessage(errorMessage) {
+        this._errorMessage = errorMessage;
+        this._updateTooltip();
+    }
+
     _formatUpdateCount() {
         return `${this._updateCount} (${this._topLevelCount})`;
     }
@@ -106,6 +113,8 @@ class PacmanUpdater extends Applet.IconApplet {
             this.set_applet_tooltip(`loop is ${loopState}\nno network connection`);
         } else if (this._checkingForUpdates) {
             this.set_applet_tooltip(`loop is ${loopState}\nchecking for updates...`);
+        } else if (this._errorMessage) {
+            this.set_applet_tooltip(`loop is ${loopState}\n${this._errorMessage}`);
         } else {
             let countMessage = this._updateCount == 0 ?
                 "no updates available" :
@@ -256,9 +265,15 @@ class PacmanUpdater extends Applet.IconApplet {
                 // are no updates; stdout is used to check if there are updates
                 log("check complete");
                 this.setCheckingForUpdates(false);
-                if (stderr) {
+                if (proc.get_exit_status() == 127) {
+                    // bash exits 127 when checkupdates is not found
                     logError(`error: ${stderr}`);
+                    this.setErrorMessage("error: pacman-contrib not installed");
+                } else if (stderr) {
+                    logError(`error: ${stderr}`);
+                    this.setErrorMessage(`error: ${stderr.trim()}`);
                 } else {
+                    this.setErrorMessage(null);
                     this.setUpdateMessage(stdout.trim());
                 }
             } catch (e) {
