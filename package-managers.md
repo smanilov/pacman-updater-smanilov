@@ -22,6 +22,7 @@ pacman-only.
     {
       "name": "aur (yay)",
       "check_cmd": "yay -Qua",
+      "check_no_updates_exit_code": 1,
       "check_parse": "lines",
       "update_cmd": "yay -Syu",
       "update_needs_terminal": true,
@@ -49,7 +50,7 @@ pacman-only.
 |---|---|
 | `name` | Display name, used in tooltip/notification breakdown (`pacman: 5, aur: 2`). |
 | `check_cmd` | Read-only command listing pending updates. Must be safe to run unattended: no sudo, no side effects. |
-| `check_no_updates_exit_code` | Exit code meaning "no updates" (vs. a real error). `checkupdates` exits 2 when nothing is pending. Default: exit 0 with empty output. |
+| `check_no_updates_exit_code` | Exit code meaning "no updates" (vs. a real error). `checkupdates` exits 2 when nothing is pending; `yay -Qua` exits 1 (like `pacman -Qu`). Default: exit 0 with empty output. |
 | `check_parse` | How to count updates from output: `"lines"` = one non-empty line per update; `{ "count_regex": "..." }` = count matching lines (e.g. `rustup check` also prints up-to-date components). |
 | `update_cmd` | Command to apply updates. Absent for self-managed entries. |
 | `update_needs_terminal` | `true` → open interactive terminal (sudo/confirm prompts); `false` → run headless, notify on completion. |

@@ -9,6 +9,15 @@
       "update_needs_terminal": true,
       "check_interval_minutes": 10,
       "provides_depgraph": true
+    },
+    {
+      "name": "aur (yay)",
+      "check_cmd": "yay -Qua",
+      "check_no_updates_exit_code": 1,
+      "check_parse": "lines",
+      "update_cmd": "yay -Syu",
+      "update_needs_terminal": true,
+      "check_interval_minutes": 10
     }
   ]
 }
