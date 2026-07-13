@@ -32,26 +32,26 @@ Log messages are prefixed with `[pacman-updater@smanilov]`.
 The entire applet is a single class `PacmanUpdater` in `applet.js` that extends `Applet.IconApplet`. It is instantiated by Cinnamon via the `main()` entry point.
 
 **Core lifecycle:**
-1. `constructor` → builds popup menu, updates depgraph, starts the update loop
+1. `constructor` → loads `package-managers.json`, builds popup menu, updates depgraph, starts the update loop
 2. `on_applet_removed_from_panel` (destructor) → cleans up network watcher, loop, menu
 
-**Update loop** (`LOOP MANAGEMENT` section): A `Mainloop.timeout_add_seconds` timer fires every 10 minutes, calling `checkUpdates()`. The loop can be toggled via the popup menu's switch item.
+**Package managers config** (`PACKAGE MANAGERS` section): `loadPackageManagers()` reads `package-managers.json` (next to `applet.js`, gitignored; schema documented in `package-managers.md`) and extends each entry with runtime state (`_timeout`, `_updateCount`, `_impactedCount`, `_checking`, `_error`). If the file is missing or invalid, no checks run and a usage message in the tooltip (and journal) tells the user to copy the committed `example-package-managers.json` (pacman-only) to `package-managers.json`. Currently only pacman is configured; `update_cmd`/`update_needs_terminal` are carried in the config but not yet used (pacman updates go through the viewer).
+
+**Update loop** (`LOOP MANAGEMENT` section): One `Mainloop.timeout_add_seconds` timer per package manager, firing every `check_interval_minutes` (default 10), calling `checkUpdates(manager)`. `self_managed` entries get no timer. All loops are toggled together via the popup menu's switch item.
 
 **Network awareness** (`NETWORK WATCHER` section): Before checking updates, `hasNetwork()` is called. If there's no network, `checkUpdates()` skips and enables a `Gio.NetworkMonitor` watcher. When full connectivity is restored, the watcher restarts the loop and removes itself.
 
-**Update check** (`CHECK UPDATES` section): Runs `checkupdates` as a subprocess via `Gio.Subprocess`. Parses output lines to get the list of updatable packages, then calls `_allImpactedOf()` to compute the full transitive impact count via `required_by` traversal. Sends a `Main.notify()` desktop notification showing `N (M)` where N = packages being updated and M = all transitively impacted installed packages.
+**Update check** (`CHECK UPDATES` section): `checkUpdates(manager)` runs the manager's `check_cmd` as a subprocess via `Gio.Subprocess`. Exit code handling: 127 → command not installed; `check_no_updates_exit_code` → zero updates; other non-zero or stderr → per-manager error shown in the tooltip. Output is counted per `check_parse` (`"lines"` or `{ count_regex }`). For `provides_depgraph` managers (pacman only), package names from the lines feed `_allImpactedOf()` to compute the transitive impact count via `required_by` traversal. When a check finds updates, `Main.notify()` shows the per-manager breakdown, e.g. `updates available: pacman: 5 (12)` where 5 = packages being updated and 12 = all transitively impacted installed packages.
 
 **Depgraph** (`DEPGRAPH` section): `updateDepgraph()` runs `pacman -Qi` asynchronously and writes `depgraph.json` via `_parsePacmanQi` + `_writeDepgraph`. It is called on construction and after a successful viewer run (detected via `gnome-terminal --wait` + `spawnCommandLineAsync` success callback). Version constraints are stripped from dep names during parsing.
 
 **Impact count** (`_allImpactedOf`): follows `required_by` edges all the way to the top of the dependency graph (no early stop at explicit packages), collecting every transitively impacted package into a single visited set across all updated packages.
 
 **State fields** (all private, updated via setters that also call `_updateTooltip()`):
-- `_timeout` — Mainloop timer ID (non-null = loop running)
+- `_managers` — package manager entries from `package-managers.json`, each with per-manager runtime state: `_timeout` (Mainloop timer ID; non-null = loop running), `_updateCount`, `_impactedCount`, `_checking`, `_error`
 - `_networkWatcherId` — GIO signal handler ID (non-null = watcher active)
-- `_depgraphPath` — absolute path to `depgraph.json` derived from `metadata.path`
-- `_updateCount` — number of packages with pending updates
-- `_topLevelCount` — total count of all transitively impacted installed packages
-- `_loopEnabled`, `_checkingForUpdates`, `_hasNetwork`
+- `_appletPath` — `metadata.path`; `_depgraphPath` — absolute path to `depgraph.json`
+- `_loopEnabled`, `_hasNetwork`
 
 ## Update Viewer (`pacman-update-viewer/`)
 

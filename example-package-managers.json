@@ -1,0 +1,14 @@
+{
+  "package_managers": [
+    {
+      "name": "pacman",
+      "check_cmd": "checkupdates",
+      "check_no_updates_exit_code": 2,
+      "check_parse": "lines",
+      "update_cmd": "sudo pacman -Syu",
+      "update_needs_terminal": true,
+      "check_interval_minutes": 10,
+      "provides_depgraph": true
+    }
+  ]
+}

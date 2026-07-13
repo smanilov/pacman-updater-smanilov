@@ -15,10 +15,8 @@ class PacmanUpdater extends Applet.IconApplet {
     constructor(metadata, orientation, panel_height, instance_id) {
         super(orientation, panel_height, instance_id);
 
-        log("pacman updater started -- version 1.1.0");
+        log("pacman updater started -- version 1.2.0");
 
-        /** @type {number|null} ID of the Mainloop timeout */
-        this._timeout = null;
         /** @type {PopupMenu.PopupMenuManager|null} */
         this.menuManager = null;
         /** @type {PopupMenu.PopupMenu|null} */
@@ -28,27 +26,37 @@ class PacmanUpdater extends Applet.IconApplet {
 
         // bool
         this._loopEnabled = true;
-        // int
-        this._updateCount = 0;
-        // int
-        this._topLevelCount = 0;
-        // bool
-        this._checkingForUpdates = false;
         // bool
         this._hasNetwork = false;
-        // string|null
-        this._errorMessage = null;
 
         /** @type {number|null} */
         this._networkWatcherId = null;
+        /** @type {string|null} usage message when package-managers.json is missing */
+        this._configError = null;
         /** @type {object|null} */
         this._depgraph = null;
         /** @type {string} */
+        this._appletPath = metadata.path;
+        /** @type {string} */
         this._depgraphPath = metadata.path + '/depgraph.json';
+
+        /**
+         * Package managers from package-managers.json, each extended with
+         * runtime state: _timeout, _updateCount, _impactedCount, _checking,
+         * _error.
+         * @type {object[]}
+         */
+        this._managers = this.loadPackageManagers();
 
         this.set_applet_icon_name("face-smile");
 
         this.buildMenu(orientation);
+
+        if (this._configError) {
+            // without a config no check will run, so show the usage
+            // message in the tooltip right away
+            this._updateTooltip();
+        }
 
         this.updateDepgraph();
     }
@@ -73,6 +81,46 @@ class PacmanUpdater extends Applet.IconApplet {
 
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
+//                           PACKAGE MANAGERS                                 //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
+
+    loadPackageManagers() {
+        let path = this._appletPath + '/package-managers.json';
+        let parsed;
+        try {
+            // Gio and JSON.parse throw on missing/unreadable/invalid input
+            let file = Gio.File.new_for_path(path);
+            let [ok, contents] = file.load_contents(null);
+            parsed = JSON.parse(new TextDecoder().decode(contents));
+        } catch (e) {
+            logError(`failed to load ${path}: ${e}`);
+            log("usage: copy example-package-managers.json to " +
+                "package-managers.json and adjust it for this system");
+            this._configError = "no package-managers.json found;\n" +
+                "copy example-package-managers.json to package-managers.json";
+            return [];
+        }
+        let configs = parsed.package_managers;
+        if (!Array.isArray(configs) || configs.length === 0) {
+            logError(`${path}: no package_managers entries`);
+            this._configError = "package-managers.json has no " +
+                "package_managers entries;\nsee example-package-managers.json";
+            return [];
+        }
+        let managers = configs.map(config => Object.assign({}, config, {
+            _timeout: null,
+            _updateCount: 0,
+            _impactedCount: 0,
+            _checking: false,
+            _error: null,
+        }));
+        log(`package managers loaded: ${managers.map(m => m.name).join(', ')}`);
+        return managers;
+    }
+
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
 //                                SETTERS                                     //
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
@@ -82,14 +130,19 @@ class PacmanUpdater extends Applet.IconApplet {
         this._updateTooltip();
     }
 
-    setUpdateCounts(updateCount, impactedCount) {
-        this._updateCount = updateCount;
-        this._topLevelCount = impactedCount;
+    setManagerUpdateCounts(manager, updateCount, impactedCount) {
+        manager._updateCount = updateCount;
+        manager._impactedCount = impactedCount;
         this._updateTooltip();
     }
 
-    setCheckingForUpdates(checkingForUpdates) {
-        this._checkingForUpdates = checkingForUpdates;
+    setManagerChecking(manager, checking) {
+        manager._checking = checking;
+        this._updateTooltip();
+    }
+
+    setManagerError(manager, errorMessage) {
+        manager._error = errorMessage;
         this._updateTooltip();
     }
 
@@ -98,29 +151,43 @@ class PacmanUpdater extends Applet.IconApplet {
         this._updateTooltip();
     }
 
-    setErrorMessage(errorMessage) {
-        this._errorMessage = errorMessage;
-        this._updateTooltip();
+    // e.g. "5 (12)" for depgraph-providing managers, "5" otherwise
+    _formatManagerCount(manager) {
+        if (manager.provides_depgraph) {
+            return `${manager._updateCount} (${manager._impactedCount})`;
+        }
+        return `${manager._updateCount}`;
     }
 
-    _formatUpdateCount() {
-        return `${this._updateCount} (${this._topLevelCount})`;
+    _managerStatusLine(manager) {
+        if (manager.self_managed) {
+            return `${manager.name}: self-managed`;
+        }
+        if (manager._checking) {
+            return `${manager.name}: checking for updates...`;
+        }
+        if (manager._error) {
+            return `${manager.name}: ${manager._error}`;
+        }
+        if (manager._updateCount === 0) {
+            return `${manager.name}: no updates`;
+        }
+        return `${manager.name}: ${this._formatManagerCount(manager)}`;
     }
 
     _updateTooltip() {
         let loopState = this._loopEnabled ? "running" : "not running";
-        if (!this._hasNetwork) {
-            this.set_applet_tooltip(`loop is ${loopState}\nno network connection`);
-        } else if (this._checkingForUpdates) {
-            this.set_applet_tooltip(`loop is ${loopState}\nchecking for updates...`);
-        } else if (this._errorMessage) {
-            this.set_applet_tooltip(`loop is ${loopState}\n${this._errorMessage}`);
+        let lines = [`loop is ${loopState}`];
+        if (this._configError) {
+            lines.push(this._configError);
+        } else if (!this._hasNetwork) {
+            lines.push("no network connection");
         } else {
-            let countMessage = this._updateCount == 0 ?
-                "no updates available" :
-                `updates available: ${this._formatUpdateCount(this._topLevelCount, this._updateCount)}`;
-            this.set_applet_tooltip(`loop is ${loopState}\n${countMessage}`);
+            for (let manager of this._managers) {
+                lines.push(this._managerStatusLine(manager));
+            }
         }
+        this.set_applet_tooltip(lines.join('\n'));
     }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -165,7 +232,7 @@ class PacmanUpdater extends Applet.IconApplet {
 ////////////////////////////////////////////////////////////////////////////////
 
     isLoopRunning() {
-        return this._timeout;
+        return this._managers.some(m => m._timeout);
     }
 
     startLoop() {
@@ -173,11 +240,15 @@ class PacmanUpdater extends Applet.IconApplet {
             log("warning: corrupt state; already running");
             return;
         }
-        this.checkUpdates();
-        this._timeout = Mainloop.timeout_add_seconds(10 * 60, () => {
-            this.checkUpdates();
-            return true;
-        });
+        for (let manager of this._managers) {
+            if (manager.self_managed) continue;
+            this.checkUpdates(manager);
+            let intervalSeconds = (manager.check_interval_minutes || 10) * 60;
+            manager._timeout = Mainloop.timeout_add_seconds(intervalSeconds, () => {
+                this.checkUpdates(manager);
+                return true;
+            });
+        }
 
         log("loop started");
     }
@@ -188,8 +259,12 @@ class PacmanUpdater extends Applet.IconApplet {
             return;
         }
 
-        Mainloop.source_remove(this._timeout);
-        this._timeout = null;
+        for (let manager of this._managers) {
+            if (manager._timeout) {
+                Mainloop.source_remove(manager._timeout);
+                manager._timeout = null;
+            }
+        }
 
         log("loop stopped");
     }
@@ -210,8 +285,8 @@ class PacmanUpdater extends Applet.IconApplet {
     launchUpdateTerminal() {
         log("opening terminal...");
 
-        let appletPath = this._depgraphPath.replace('/depgraph.json', '');
-        let viewerPath = appletPath + '/pacman-update-viewer/target/release/pacman-update-viewer';
+        let viewerPath = this._appletPath +
+            '/pacman-update-viewer/target/release/pacman-update-viewer';
 
         // --wait makes gnome-terminal block until the shell exits, so the
         // spawnCommandLineAsync callback fires only after the update finishes.
@@ -235,7 +310,7 @@ class PacmanUpdater extends Applet.IconApplet {
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
-    checkUpdates() {
+    checkUpdates(manager) {
         if (!this.hasNetwork()) {
             log("no network connection, skipping update check");
             this.setHasNetwork(false);
@@ -248,11 +323,11 @@ class PacmanUpdater extends Applet.IconApplet {
             this.setHasNetwork(true);
         }
 
-        log("checking for updates...");
-        this.setCheckingForUpdates(true);
+        log(`checking for updates (${manager.name})...`);
+        this.setManagerChecking(manager, true);
 
         let proc = new Gio.Subprocess({
-            argv: ['bash', '-c', 'checkupdates'],
+            argv: ['bash', '-c', manager.check_cmd],
             flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
         });
 
@@ -261,38 +336,72 @@ class PacmanUpdater extends Applet.IconApplet {
         proc.communicate_utf8_async(null, null, (proc, res) => {
             try {
                 let [ok, stdout, stderr] = proc.communicate_utf8_finish(res);
-                // ok is ignored, because checkupdates returns "not ok" if there
-                // are no updates; stdout is used to check if there are updates
-                log("check complete");
-                this.setCheckingForUpdates(false);
-                if (proc.get_exit_status() == 127) {
-                    // bash exits 127 when checkupdates is not found
+                log(`check complete (${manager.name})`);
+                this.setManagerChecking(manager, false);
+                let status = proc.get_exit_status();
+                if (status === 127) {
+                    // bash exits 127 when the command is not found
                     logError(`error: ${stderr}`);
-                    this.setErrorMessage("error: pacman-contrib not installed");
-                } else if (stderr) {
+                    let hint = manager.check_cmd.startsWith('checkupdates') ?
+                        "pacman-contrib not installed" :
+                        `'${manager.check_cmd.split(/\s+/)[0]}' not installed`;
+                    this.setManagerError(manager, `error: ${hint}`);
+                } else if (status === manager.check_no_updates_exit_code) {
+                    this.setManagerError(manager, null);
+                    this.handleCheckOutput(manager, "");
+                } else if (status !== 0 || stderr) {
                     logError(`error: ${stderr}`);
-                    this.setErrorMessage(`error: ${stderr.trim()}`);
+                    let message = stderr ? stderr.trim() : `exit code ${status}`;
+                    this.setManagerError(manager, `error: ${message}`);
                 } else {
-                    this.setErrorMessage(null);
-                    this.setUpdateMessage(stdout.trim());
+                    this.setManagerError(manager, null);
+                    this.handleCheckOutput(manager, stdout.trim());
                 }
             } catch (e) {
-                logError(`exception: parseInt failed? ${e}`);
+                logError(`exception during update check (${manager.name}): ${e}`);
+                this.setManagerChecking(manager, false);
+                this.setManagerError(manager, `error: ${e.message || e}`);
             }
         });
     }
 
-    setUpdateMessage(cmdOutput) {
-        let lines = cmdOutput ? cmdOutput.split('\n') : [];
-        let total = lines.length;
-        let pkgNames = lines.map(l => l.split(/\s+/)[0]);
-        let impacted = this._allImpactedOf(pkgNames);
-        this.setUpdateCounts(total, impacted.size);
-        log(`updates available: ${this._formatUpdateCount()}`);
-        if (total > 0) {
-            let notification = `updates available: ${this._formatUpdateCount()}`;
-            Main.notify("Pacman Updater", notification);
+    // Count pending updates from check_cmd output according to check_parse,
+    // returning [count, pkgNames]. pkgNames is only populated for "lines"
+    // parsing, where each line starts with a package name.
+    _parseCheckOutput(manager, cmdOutput) {
+        let lines = cmdOutput ? cmdOutput.split('\n').filter(l => l.trim()) : [];
+        let parse = manager.check_parse || "lines";
+        if (parse === "lines") {
+            return [lines.length, lines.map(l => l.split(/\s+/)[0])];
         }
+        if (parse.count_regex) {
+            let regex = new RegExp(parse.count_regex);
+            return [lines.filter(l => regex.test(l)).length, []];
+        }
+        logError(`unknown check_parse for ${manager.name}; assuming "lines"`);
+        return [lines.length, lines.map(l => l.split(/\s+/)[0])];
+    }
+
+    handleCheckOutput(manager, cmdOutput) {
+        let [total, pkgNames] = this._parseCheckOutput(manager, cmdOutput);
+        // impact counts are depgraph-based and thus pacman-only
+        let impacted = manager.provides_depgraph ?
+            this._allImpactedOf(pkgNames).size : 0;
+        this.setManagerUpdateCounts(manager, total, impacted);
+        log(`updates available: ${this._managerStatusLine(manager)}`);
+        if (total > 0) {
+            this._notifyUpdates();
+        }
+    }
+
+    // Notification shows the per-manager breakdown of pending updates,
+    // e.g. "updates available: pacman: 5 (12), aur: 2".
+    _notifyUpdates() {
+        let parts = this._managers
+            .filter(m => !m.self_managed && m._updateCount > 0)
+            .map(m => `${m.name}: ${this._formatManagerCount(m)}`);
+        if (parts.length === 0) return;
+        Main.notify("Pacman Updater", `updates available: ${parts.join(', ')}`);
     }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -386,12 +495,16 @@ class PacmanUpdater extends Applet.IconApplet {
                 let [ok, stdout, stderr] = proc.communicate_utf8_finish(res);
                 if (stderr && stderr.trim()) {
                     logError(`depgraph: pacman -Qi error: ${stderr}`);
+                    // still start the update loop; impact counts will just
+                    // miss the depgraph until the next successful rebuild
+                    this.restartLoop();
                     return;
                 }
                 let graph = this._parsePacmanQi(stdout);
                 this._writeDepgraph(graph);
             } catch (e) {
                 logError(`depgraph update failed: ${e}`);
+                this.restartLoop();
             }
         });
     }
