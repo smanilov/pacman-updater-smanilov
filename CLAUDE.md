@@ -59,19 +59,19 @@ A Rust TUI app (`src/main.rs`) that replaces the old raw `sudo pacman -Syu` term
 
 **Flow:**
 1. Shows a loading screen while fetching package data and checking for updates
-2. Runs `checkupdates` to get the pending update list
+2. Runs `checkupdates` (repo updates) and `yay -Qua` (AUR updates) to get the pending update lists; yay being absent just yields an empty AUR list
 3. Reads `depgraph.json` to compute both reverse impact (`required_by`) and forward impact (`depends_on`)
-4. Starts in updates mode, or all-packages mode if there are no pending updates but a depgraph is available
+4. Starts in updates mode; if no repo updates, AUR-updates mode; if neither, all-packages mode (given a depgraph)
 5. Sorts root rows by the active impact direction and renders them as a collapsible tree
-6. `r` suspends the TUI, runs `sudo pacman -Syu` in the foreground, then resumes the TUI; also runs `fc-cache -fv` on success; sets an internal `update_succeeded` flag on success
-7. `u` suspends the TUI, runs `sudo pacman -S <package>`, rebuilds `depgraph.json`, reloads package state, re-sorts; sets `update_succeeded` on success
+6. `r` suspends the TUI, runs `sudo pacman -Syu` (or `yay -Syu` in AUR mode — yay elevates itself, no sudo) in the foreground, then resumes the TUI; also runs `fc-cache -fv` on success; sets an internal `update_succeeded` flag on success
+7. `u` suspends the TUI, runs `sudo pacman -S <package>` (or `yay -S <package>` in AUR mode), rebuilds `depgraph.json`, reloads package state, re-sorts; sets `update_succeeded` on success
 8. `d` suspends the TUI, runs `sudo pacman -R <package>`, rebuilds `depgraph.json`, reloads package state, and re-sorts
 9. `q` exits with code 0 if `update_succeeded`, else code 1
 
 The applet's `spawnCommandLineAsync` success callback (which triggers `updateDepgraph()`) fires only when the viewer exits with code 0 — i.e., only after a successful update or install.
 
 **Modes and controls:**
-- `a` toggles updates vs all-packages mode
+- `a` cycles updates → AUR updates (yay) → all-packages mode; AUR updates use the same depgraph impact trees since installed AUR packages are in the pacman database
 - `t` toggles tree direction between `used-by` (`required_by`) and `deps` (`depends_on`)
 - `/` enters search mode, filtering visible root rows by package name
 - `g` toggles package group labels

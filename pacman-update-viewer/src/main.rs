@@ -46,6 +46,7 @@ struct Depgraph {
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Updates,
+    AurUpdates,
     AllPackages,
 }
 
@@ -106,6 +107,7 @@ struct SearchState {
 
 struct AppState {
     updates_roots: Vec<UpdateInfo>,
+    aur_updates_roots: Vec<UpdateInfo>,
     all_roots: Vec<AllPkgInfo>,
     all_leaves: Vec<AllPkgInfo>,
     packages: HashMap<String, Package>,
@@ -138,8 +140,8 @@ impl AppState {
         };
         let mut out = vec![];
         match self.mode {
-            Mode::Updates => {
-                for root in &self.updates_roots {
+            Mode::Updates | Mode::AurUpdates => {
+                for root in self.update_roots_for_mode() {
                     if !matches(&root.name) {
                         continue;
                     }
@@ -197,6 +199,14 @@ impl AppState {
             }
         }
         out
+    }
+
+    fn update_roots_for_mode(&self) -> &Vec<UpdateInfo> {
+        if self.mode == Mode::AurUpdates {
+            &self.aur_updates_roots
+        } else {
+            &self.updates_roots
+        }
     }
 
     fn req_by(&self, name: &str) -> Vec<String> {
@@ -338,7 +348,9 @@ impl AppState {
 
     fn expand_current(&mut self) {
         let vis = self.visible();
-        let item = &vis[self.cursor];
+        let Some(item) = vis.get(self.cursor) else {
+            return;
+        };
         if item.has_children && !item.is_cycle {
             self.expanded.insert(item.key.clone());
         }
@@ -346,7 +358,9 @@ impl AppState {
 
     fn collapse_or_go_to_parent(&mut self) {
         let vis = self.visible();
-        let item = &vis[self.cursor];
+        let Some(item) = vis.get(self.cursor) else {
+            return;
+        };
         let key = item.key.clone();
         let depth = item.depth;
         let is_expanded = item.is_expanded;
@@ -394,7 +408,13 @@ impl AppState {
             .collect();
         self.updates_roots
             .retain(|r| packages.contains_key(&r.name));
-        for root in &mut self.updates_roots {
+        self.aur_updates_roots
+            .retain(|r| packages.contains_key(&r.name));
+        for root in self
+            .updates_roots
+            .iter_mut()
+            .chain(self.aur_updates_roots.iter_mut())
+        {
             root.impact = *self.used_by_impacts.get(&root.name).unwrap_or(&1);
         }
         self.expanded
@@ -406,7 +426,8 @@ impl AppState {
 
     fn toggle_mode(&mut self) {
         self.mode = match self.mode {
-            Mode::Updates => Mode::AllPackages,
+            Mode::Updates => Mode::AurUpdates,
+            Mode::AurUpdates => Mode::AllPackages,
             Mode::AllPackages => Mode::Updates,
         };
         self.cursor = 0;
@@ -449,12 +470,14 @@ impl AppState {
         });
         self.updates_roots
             .sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)));
+        self.aur_updates_roots
+            .sort_by(|a, b| impact_of(&b.name).cmp(&impact_of(&a.name)));
     }
 
     fn root_names(&self) -> Vec<String> {
         match self.mode {
-            Mode::Updates => self
-                .updates_roots
+            Mode::Updates | Mode::AurUpdates => self
+                .update_roots_for_mode()
                 .iter()
                 .map(|root| root.name.clone())
                 .collect(),
@@ -558,9 +581,9 @@ fn visit_dep_dag(name: &str, packages: &HashMap<String, Package>, visited: &mut 
 // Subprocess helpers
 // ---------------------------------------------------------------------------
 
-fn run_checkupdates() -> Vec<(String, String, String)> {
-    // Output format: "pkgname old_ver -> new_ver"
-    match Command::new("checkupdates").output() {
+// Output format (checkupdates and yay -Qua alike): "pkgname old_ver -> new_ver"
+fn run_update_check(cmd: &str, args: &[&str]) -> Vec<(String, String, String)> {
+    match Command::new(cmd).args(args).output() {
         Ok(out) => String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter_map(|line| {
@@ -569,10 +592,18 @@ fn run_checkupdates() -> Vec<(String, String, String)> {
             })
             .collect(),
         Err(e) => {
-            eprintln!("Failed to run checkupdates: {e}");
+            eprintln!("Failed to run {cmd}: {e}");
             vec![]
         }
     }
+}
+
+fn run_checkupdates() -> Vec<(String, String, String)> {
+    run_update_check("checkupdates", &[])
+}
+
+fn run_yay_check() -> Vec<(String, String, String)> {
+    run_update_check("yay", &["-Qua"])
 }
 
 fn depgraph_path() -> Option<String> {
@@ -685,6 +716,7 @@ fn rebuild_depgraph() -> HashMap<String, Package> {
 
 fn build_state(
     updates_raw: Vec<(String, String, String)>,
+    aur_updates_raw: Vec<(String, String, String)>,
     depgraph: Option<Depgraph>,
     initial_mode: Mode,
 ) -> AppState {
@@ -700,19 +732,24 @@ fn build_state(
         .map(|name| (name.clone(), dep_dag_size(name, &packages)))
         .collect();
 
-    let mut updates_roots: Vec<UpdateInfo> = updates_raw
-        .into_iter()
-        .map(|(name, old_version, new_version)| {
-            let impact = *used_by_impacts.get(&name).unwrap_or(&1);
-            UpdateInfo {
-                name,
-                old_version,
-                new_version,
-                impact,
-            }
-        })
-        .collect();
-    updates_roots.sort_by(|a, b| b.impact.cmp(&a.impact));
+    let build_update_roots = |raw: Vec<(String, String, String)>| -> Vec<UpdateInfo> {
+        let mut roots: Vec<UpdateInfo> = raw
+            .into_iter()
+            .map(|(name, old_version, new_version)| {
+                let impact = *used_by_impacts.get(&name).unwrap_or(&1);
+                UpdateInfo {
+                    name,
+                    old_version,
+                    new_version,
+                    impact,
+                }
+            })
+            .collect();
+        roots.sort_by(|a, b| b.impact.cmp(&a.impact));
+        roots
+    };
+    let updates_roots = build_update_roots(updates_raw);
+    let aur_updates_roots = build_update_roots(aur_updates_raw);
 
     let mut all_roots: Vec<AllPkgInfo> = packages
         .iter()
@@ -744,6 +781,7 @@ fn build_state(
 
     AppState {
         updates_roots,
+        aur_updates_roots,
         all_roots,
         all_leaves,
         packages,
@@ -793,9 +831,16 @@ fn main() -> Result<(), io::Error> {
     )?;
     let updates_raw = run_checkupdates();
 
+    draw_loading(
+        &mut terminal,
+        "Starting pacman-update-viewer",
+        "Checking for AUR updates (yay)...",
+    )?;
+    let aur_updates_raw = run_yay_check();
+
     let has_depgraph = depgraph.is_some();
 
-    if updates_raw.is_empty() && !has_depgraph {
+    if updates_raw.is_empty() && aur_updates_raw.is_empty() && !has_depgraph {
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         terminal.show_cursor()?;
@@ -808,12 +853,14 @@ fn main() -> Result<(), io::Error> {
         "Starting pacman-update-viewer",
         "Building dependency view...",
     )?;
-    let initial_mode = if updates_raw.is_empty() {
-        Mode::AllPackages
-    } else {
+    let initial_mode = if !updates_raw.is_empty() {
         Mode::Updates
+    } else if !aur_updates_raw.is_empty() {
+        Mode::AurUpdates
+    } else {
+        Mode::AllPackages
     };
-    let mut state = build_state(updates_raw, depgraph, initial_mode);
+    let mut state = build_state(updates_raw, aur_updates_raw, depgraph, initial_mode);
 
     let update_succeeded = run_app(&mut terminal, &mut state)?;
 
@@ -859,12 +906,14 @@ fn run_app(
     let max_update_name = state
         .updates_roots
         .iter()
+        .chain(state.aur_updates_roots.iter())
         .map(|r| r.name.len())
         .max()
         .unwrap_or(10);
     let max_old = state
         .updates_roots
         .iter()
+        .chain(state.aur_updates_roots.iter())
         .map(|r| r.old_version.len())
         .max()
         .unwrap_or(10);
@@ -954,6 +1003,9 @@ fn run_app(
             let dir = if transposed { "deps↓" } else { "used-by↑" };
             let title = match mode {
                 Mode::Updates => format!(" Pacman Updates [{dir}] — impact  package  old → new "),
+                Mode::AurUpdates => {
+                    format!(" AUR Updates (yay) [{dir}] — impact  package  old → new ")
+                }
                 Mode::AllPackages => format!(" All Packages [{dir}] — impact  package  version "),
             };
 
@@ -1002,10 +1054,10 @@ fn run_app(
                         "    → / ←        Expand / collapse\n",
                         "    i            Package info (pacman -Qi)\n",
                         "    /            Search packages\n",
-                        "    r            Run update (sudo pacman -Syu)\n",
-                        "    u            Install package under cursor (sudo pacman -S)\n",
+                        "    r            Run update (pacman -Syu; yay -Syu in AUR mode)\n",
+                        "    u            Install package under cursor (pacman -S; yay -S in AUR mode)\n",
                         "    d            Remove package under cursor (sudo pacman -R)\n",
-                        "    a            Toggle updates / all packages\n",
+                        "    a            Cycle updates / AUR updates / all packages\n",
                         "    t            Transpose tree (used-by ↔ depends-on)\n",
                         "    g            Toggle group labels\n",
                         "    h / ?        Show this help\n",
@@ -1135,7 +1187,9 @@ fn run_app(
                             state.cursor = 0;
                         }
                         KeyCode::Char('i') => {
-                            let name = vis[cursor].name.clone();
+                            let Some(name) = vis.get(cursor).map(|i| i.name.clone()) else {
+                                continue;
+                            };
                             state.info_popup = Some(InfoPopup {
                                 content: pacman_qi(&name),
                                 package: name,
@@ -1147,11 +1201,19 @@ fn run_app(
                             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                             terminal.show_cursor()?;
 
-                            if Command::new("sudo")
-                                .args(["pacman", "-Syu"])
-                                .status()
-                                .is_ok_and(|s| s.success())
-                            {
+                            // yay elevates itself and must not run under sudo
+                            let update_ok = if mode == Mode::AurUpdates {
+                                Command::new("yay")
+                                    .args(["-Syu"])
+                                    .status()
+                                    .is_ok_and(|s| s.success())
+                            } else {
+                                Command::new("sudo")
+                                    .args(["pacman", "-Syu"])
+                                    .status()
+                                    .is_ok_and(|s| s.success())
+                            };
+                            if update_ok {
                                 if Command::new("fc-cache")
                                     .args(["-fv"])
                                     .status()
@@ -1166,7 +1228,9 @@ fn run_app(
                             terminal.clear()?;
                         }
                         KeyCode::Char('d') => {
-                            let name = vis[cursor].name.clone();
+                            let Some(name) = vis.get(cursor).map(|i| i.name.clone()) else {
+                                continue;
+                            };
                             disable_raw_mode()?;
                             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                             terminal.show_cursor()?;
@@ -1183,16 +1247,26 @@ fn run_app(
                             state.reload_packages(packages);
                         }
                         KeyCode::Char('u') => {
-                            let name = vis[cursor].name.clone();
+                            let Some(name) = vis.get(cursor).map(|i| i.name.clone()) else {
+                                continue;
+                            };
                             disable_raw_mode()?;
                             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                             terminal.show_cursor()?;
 
-                            if Command::new("sudo")
-                                .args(["pacman", "-S", &name])
-                                .status()
-                                .is_ok_and(|s| s.success())
-                            {
+                            // yay elevates itself and must not run under sudo
+                            let install_ok = if mode == Mode::AurUpdates {
+                                Command::new("yay")
+                                    .args(["-S", &name])
+                                    .status()
+                                    .is_ok_and(|s| s.success())
+                            } else {
+                                Command::new("sudo")
+                                    .args(["pacman", "-S", &name])
+                                    .status()
+                                    .is_ok_and(|s| s.success())
+                            };
+                            if install_ok {
                                 state.update_succeeded = true;
                             }
                             let packages = rebuild_depgraph();
