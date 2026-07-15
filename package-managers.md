@@ -1,8 +1,9 @@
 # package-managers.json
 
 Config file describing the package managers the applet tracks. Lives next to
-`applet.js`; read on startup. `depgraph.json` and the impact machinery remain
-pacman-only.
+`applet.js`; read on startup. `depgraph.json` is sourced from pacman only, but
+any manager whose packages live in the pacman database (e.g. yay for AUR) can
+opt into impact counts via `uses_depgraph`.
 
 ## Schema
 
@@ -26,7 +27,8 @@ pacman-only.
       "check_parse": "lines",
       "update_cmd": "yay -Syu",
       "update_needs_terminal": true,
-      "check_interval_minutes": 10
+      "check_interval_minutes": 10,
+      "uses_depgraph": true
     },
     {
       "name": "rustup",
@@ -55,7 +57,8 @@ pacman-only.
 | `update_cmd` | Command to apply updates. Absent for self-managed entries. |
 | `update_needs_terminal` | `true` → open interactive terminal (sudo/confirm prompts); `false` → run headless, notify on completion. |
 | `check_interval_minutes` | Per-manager check cadence. Keeps rustup from being polled every 10 minutes. |
-| `provides_depgraph` | This manager feeds `depgraph.json` / impact counts. Only pacman. |
+| `provides_depgraph` | This manager feeds `depgraph.json` (and implicitly gets impact counts). Only pacman. |
+| `uses_depgraph` | This manager's updated packages are installed via pacman, so they appear in `depgraph.json`; show impact counts for them. Used by yay/AUR. |
 | `self_managed` | Tool updates itself (e.g. claude). No commands run; shown in UI so the user knows it's accounted for. |
 
 ## Notes
@@ -64,7 +67,8 @@ pacman-only.
   `checkupdates` already covers the repo side. So yay's check is AUR-only
   (`yay -Qua`) to avoid double counting; its superset update command is harmless.
 - **AUR impact counts come for free:** installed AUR packages appear in
-  `pacman -Qi`, so they are already in the depgraph.
+  `pacman -Qi`, so they are already in the depgraph — hence `uses_depgraph`
+  on the yay entry.
 - **Applet badge:** the applet runs every manager's check on its own interval
   and shows the summed count; the tooltip and notification show the
   per-manager breakdown.

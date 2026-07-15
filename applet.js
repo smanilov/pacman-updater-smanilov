@@ -151,9 +151,16 @@ class PacmanUpdater extends Applet.IconApplet {
         this._updateTooltip();
     }
 
-    // e.g. "5 (12)" for depgraph-providing managers, "5" otherwise
+    // Whether this manager's updates get impact counts from the depgraph:
+    // either it sources the depgraph (pacman) or its updated packages are
+    // installed via pacman and thus present in it (yay/AUR).
+    _usesDepgraph(manager) {
+        return !!(manager.provides_depgraph || manager.uses_depgraph);
+    }
+
+    // e.g. "5 (12)" for depgraph-using managers, "5" otherwise
     _formatManagerCount(manager) {
-        if (manager.provides_depgraph) {
+        if (this._usesDepgraph(manager)) {
             return `${manager._updateCount} (${manager._impactedCount})`;
         }
         return `${manager._updateCount}`;
@@ -384,8 +391,7 @@ class PacmanUpdater extends Applet.IconApplet {
 
     handleCheckOutput(manager, cmdOutput) {
         let [total, pkgNames] = this._parseCheckOutput(manager, cmdOutput);
-        // impact counts are depgraph-based and thus pacman-only
-        let impacted = manager.provides_depgraph ?
+        let impacted = this._usesDepgraph(manager) ?
             this._allImpactedOf(pkgNames).size : 0;
         this.setManagerUpdateCounts(manager, total, impacted);
         log(`updates available: ${this._managerStatusLine(manager)}`);

@@ -17,7 +17,8 @@
       "check_parse": "lines",
       "update_cmd": "yay -Syu",
       "update_needs_terminal": true,
-      "check_interval_minutes": 10
+      "check_interval_minutes": 10,
+      "uses_depgraph": true
     }
   ]
 }
