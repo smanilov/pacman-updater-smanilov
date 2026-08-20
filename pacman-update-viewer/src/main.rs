@@ -95,7 +95,7 @@ enum ItemKind {
 }
 
 struct InfoPopup {
-    package: String,
+    title: String,
     content: String,
     scroll: u16,
 }
@@ -799,6 +799,85 @@ fn build_state(
     }
 }
 
+fn dot_escape(name: &str) -> String {
+    name.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Write a .dot graph of the current mode's update roots plus everything that
+/// transitively depends on them, render it to a .png with graphviz, and open
+/// the image with xdg-open.
+fn export_updates_graph(state: &AppState) -> Result<(), String> {
+    let roots = state.update_roots_for_mode();
+    if roots.is_empty() {
+        return Err("No updates to graph.".to_string());
+    }
+    let root_names: HashSet<&str> = roots.iter().map(|r| r.name.as_str()).collect();
+
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut edges: Vec<(String, String)> = vec![];
+    let mut stack: Vec<String> = roots.iter().map(|r| r.name.clone()).collect();
+    while let Some(name) = stack.pop() {
+        if !visited.insert(name.clone()) {
+            continue;
+        }
+        if let Some(pkg) = state.packages.get(&name) {
+            for parent in &pkg.required_by {
+                edges.push((parent.clone(), name.clone()));
+                stack.push(parent.clone());
+            }
+        }
+    }
+    edges.sort();
+    edges.dedup();
+    let mut nodes: Vec<&String> = visited.iter().collect();
+    nodes.sort();
+
+    let mut dot = String::from(
+        "digraph updates {\n  rankdir=LR;\n  node [shape=box, style=filled, fillcolor=white];\n",
+    );
+    for name in nodes {
+        let color = if root_names.contains(name.as_str()) {
+            "lightgreen"
+        } else {
+            "white"
+        };
+        dot.push_str(&format!(
+            "  \"{}\" [fillcolor={color}];\n",
+            dot_escape(name)
+        ));
+    }
+    for (from, to) in &edges {
+        dot.push_str(&format!(
+            "  \"{}\" -> \"{}\";\n",
+            dot_escape(from),
+            dot_escape(to)
+        ));
+    }
+    dot.push_str("}\n");
+
+    let dot_path = "/tmp/pacman-updates.dot";
+    let png_path = "/tmp/pacman-updates.png";
+    std::fs::write(dot_path, dot).map_err(|e| format!("Could not write {dot_path}: {e}"))?;
+
+    let output = Command::new("dot")
+        .args(["-Tpng", dot_path, "-o", png_path])
+        .output()
+        .map_err(|e| format!("Could not run dot (is graphviz installed?): {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "dot failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Command::new("xdg-open")
+        .arg(png_path)
+        .spawn()
+        .map_err(|e| format!("Could not run xdg-open: {e}"))?;
+
+    Ok(())
+}
+
 fn pacman_qi(package: &str) -> String {
     match Command::new("pacman").args(["-Qi", package]).output() {
         Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -939,7 +1018,7 @@ fn run_app(
         let popup_snapshot = state
             .info_popup
             .as_ref()
-            .map(|p| (p.package.clone(), p.content.clone(), p.scroll));
+            .map(|p| (p.title.clone(), p.content.clone(), p.scroll));
 
         list_state.select(Some(cursor));
         terminal.draw(|f| {
@@ -1042,10 +1121,7 @@ fn run_app(
 
             // Help popup overlay
             if show_help {
-                let area = centered_rect(55, 60, f.area());
-                f.render_widget(Clear, area);
-                f.render_widget(
-                    Paragraph::new(concat!(
+                let help_text = concat!(
                         "  Normal mode\n",
                         "\n",
                         "    ↑ / ↓        Navigate\n",
@@ -1059,23 +1135,22 @@ fn run_app(
                         "    d            Remove package under cursor (sudo pacman -R)\n",
                         "    a            Cycle updates / AUR updates / all packages\n",
                         "    t            Transpose tree (used-by ↔ depends-on)\n",
+                        "    p            Export update graph to /tmp (.dot → .png, xdg-open)\n",
                         "    g            Toggle group labels\n",
                         "    h / ?        Show this help\n",
                         "    q            Quit\n",
                         "\n",
                         "  Search mode\n",
                         "\n",
-                        "    Type         Filter packages by name\n",
-                        "    PgUp / PgDn  Move one page\n",
-                        "    Home / End   Jump to start / end\n",
-                        "    Backspace    Delete last character\n",
-                        "    ↑ / ↓        Navigate filtered list\n",
-                        "    Enter        Confirm selection\n",
-                        "    Esc          Cancel search\n",
-                        "\n",
+                        "    Type / Backspace              Edit the name filter\n",
+                        "    ↑ ↓ PgUp PgDn Home End        Navigate filtered list\n",
+                        "    Enter / Esc                   Confirm / cancel search\n",
                         "  any key closes this popup",
-                    ))
-                    .block(
+                );
+                let area = centered_rect_fit(help_text, f.area());
+                f.render_widget(Clear, area);
+                f.render_widget(
+                    Paragraph::new(help_text).block(
                         Block::default()
                             .borders(Borders::ALL)
                             .title(" Help ")
@@ -1086,7 +1161,7 @@ fn run_app(
             }
 
             // Info popup overlay
-            if let Some((pkg, content, scroll)) = &popup_snapshot {
+            if let Some((popup_title, content, scroll)) = &popup_snapshot {
                 let area = centered_rect(80, 80, f.area());
                 f.render_widget(Clear, area);
                 f.render_widget(
@@ -1094,7 +1169,7 @@ fn run_app(
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title(format!(" pacman -Qi {pkg} — ↑↓ scroll   any other key closes "))
+                                .title(popup_title.as_str())
                                 .border_style(Style::default().fg(Color::Yellow)),
                         )
                         .wrap(Wrap { trim: false })
@@ -1176,6 +1251,15 @@ fn run_app(
                     match key.code {
                         KeyCode::Char('q') => return Ok(state.update_succeeded),
                         KeyCode::Char('h') | KeyCode::Char('?') => state.show_help = true,
+                        KeyCode::Char('p') => {
+                            if let Err(msg) = export_updates_graph(state) {
+                                state.info_popup = Some(InfoPopup {
+                                    title: " update graph export — any key closes ".to_string(),
+                                    content: msg,
+                                    scroll: 0,
+                                });
+                            }
+                        }
                         KeyCode::Char('g') => state.show_groups = !state.show_groups,
                         KeyCode::Char('a') => state.toggle_mode(),
                         KeyCode::Char('t') => state.toggle_transposed(),
@@ -1191,8 +1275,10 @@ fn run_app(
                                 continue;
                             };
                             state.info_popup = Some(InfoPopup {
+                                title: format!(
+                                    " pacman -Qi {name} — ↑↓ scroll   any other key closes "
+                                ),
                                 content: pacman_qi(&name),
-                                package: name,
                                 scroll: 0,
                             });
                         }
@@ -1289,6 +1375,22 @@ fn run_app(
                 }
             }
         }
+    }
+}
+
+/// Centered rect sized to fit `text` plus borders, clamped to `area`.
+fn centered_rect_fit(text: &str, area: Rect) -> Rect {
+    let width = (text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16)
+        .saturating_add(4)
+        .min(area.width);
+    let height = (text.lines().count() as u16)
+        .saturating_add(2)
+        .min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
     }
 }
 

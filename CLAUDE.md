@@ -74,6 +74,7 @@ The applet's `spawnCommandLineAsync` success callback (which triggers `updateDep
 - `a` cycles updates → AUR updates (yay) → all-packages mode; AUR updates use the same depgraph impact trees since installed AUR packages are in the pacman database
 - `t` toggles tree direction between `used-by` (`required_by`) and `deps` (`depends_on`)
 - `/` enters search mode, filtering visible root rows by package name
+- `p` exports the current mode's update graph: writes `/tmp/pacman-updates.dot` (update roots plus everything transitively depending on them, roots highlighted), renders `/tmp/pacman-updates.png` via graphviz `dot`, and opens it with `xdg-open`; errors show in the info popup
 - `g` toggles package group labels
 - `h` / `?` opens the help overlay
 
